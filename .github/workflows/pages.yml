@@ -34,3 +34,6 @@ jobs:
           path: _site
       - uses: actions/deploy-pages@v4
         id: deployment
+      - name: Verify public multiplayer service
+        timeout-minutes: 2
+        run: deno task test:multiplayer wss://games101-multiplayer.electro-k.workers.dev/escondidas-en-pintura/ws 12000
