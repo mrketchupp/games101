@@ -4,6 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <meta name="theme-color" content="#4fb7ff">
+  <!-- en iPhone, «Añadir a pantalla de inicio» abre el juego a pantalla completa -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Escondidas">
   <title>Escondidas en Pintura</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -14,6 +19,11 @@
 <body>
   <!-- Fondo del menú: un cuadro al azar -->
   <div id="menu-bg" aria-hidden="true"></div>
+
+  <button class="icon-btn fs-btn fs-float" id="btn-full-menu" title="Pantalla completa (F)" aria-label="Entrar o salir de pantalla completa" hidden>
+          <svg viewBox="0 0 24 24" class="ic-full"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg viewBox="0 0 24 24" class="ic-unfull"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </button>
 
   <!-- ============ MENÚ ============ -->
   <section class="screen active" id="scr-menu">
@@ -41,6 +51,14 @@
     <div class="card panel">
       <h2>Partida contra la CPU</h2>
       <div class="opt">
+        <span class="opt-label">Cuadros</span>
+        <div class="seg" data-cpu="gallery">
+          <button data-v="clasico">Clásicos</button><button data-v="arte">Obras de arte</button>
+        </div>
+        <p class="opt-note" data-gal="arte">Cuadros famosos de museo, con mucho detalle: más difíciles de imitar, así que hay más tiempo (o ninguno).</p>
+        <p class="opt-note warn" id="cpu-art-file" hidden>Las obras de arte necesitan abrir el juego desde su dirección publicada o con <code>deno task start</code>.</p>
+      </div>
+      <div class="opt">
         <span class="opt-label">Rivales</span>
         <div class="seg" data-cpu="bots">
           <button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button>
@@ -61,7 +79,7 @@
       <div class="opt">
         <span class="opt-label">Tiempo para esconderte</span>
         <div class="seg" data-cpu="hideTime">
-          <button data-v="60">1:00</button><button data-v="90">1:30</button><button data-v="120">2:00</button><button data-v="180">3:00</button>
+          <button data-v="60" data-gal="clasico">1:00</button><button data-v="90" data-gal="clasico">1:30</button><button data-v="120" data-gal="clasico">2:00</button><button data-v="180">3:00</button><button data-v="300" data-gal="arte">5:00</button><button data-v="600" data-gal="arte">10:00</button><button data-v="0" data-gal="arte">Sin límite</button>
         </div>
       </div>
       <div class="row">
@@ -115,6 +133,12 @@
       </div>
       <div class="players" id="lobby-players"></div>
       <div class="lobby-settings" id="lobby-settings">
+        <div class="opt" id="lobby-gallery">
+          <span class="opt-label">Cuadros</span>
+          <div class="seg" data-room="gallery">
+            <button data-v="clasico">Clásicos</button><button data-v="arte">Obras de arte</button>
+          </div>
+        </div>
         <div class="opt">
           <span class="opt-label">Rondas</span>
           <div class="seg" data-room="rounds">
@@ -124,13 +148,13 @@
         <div class="opt">
           <span class="opt-label">Tiempo para esconderse</span>
           <div class="seg" data-room="hideTime">
-            <button data-v="60">1:00</button><button data-v="90">1:30</button><button data-v="120">2:00</button><button data-v="180">3:00</button>
+            <button data-v="60" data-gal="clasico">1:00</button><button data-v="90" data-gal="clasico">1:30</button><button data-v="120" data-gal="clasico">2:00</button><button data-v="180">3:00</button><button data-v="300" data-gal="arte">5:00</button><button data-v="600" data-gal="arte">10:00</button><button data-v="0" data-gal="arte">Sin límite</button>
           </div>
         </div>
         <div class="opt">
           <span class="opt-label">Tiempo para buscar</span>
           <div class="seg" data-room="seekTime">
-            <button data-v="20">0:20</button><button data-v="30">0:30</button><button data-v="45">0:45</button><button data-v="60">1:00</button>
+            <button data-v="20" data-gal="clasico">0:20</button><button data-v="30">0:30</button><button data-v="45">0:45</button><button data-v="60">1:00</button><button data-v="90" data-gal="arte">1:30</button><button data-v="120" data-gal="arte">2:00</button>
           </div>
         </div>
       </div>
@@ -152,8 +176,13 @@
       <div class="hud-center">
         <div class="timer" id="hud-timer">0:00</div>
         <div class="pill blue" id="hud-sub">LISTOS 0/2</div>
+        <button class="btn yellow small hurry-btn" id="btn-hurry" title="Termina la fase de esconderse en 30 segundos" hidden>⏱ Últimos 30 s</button>
       </div>
       <div class="hud-side right">
+        <button class="icon-btn fs-btn" id="btn-full" title="Pantalla completa (F)" aria-label="Entrar o salir de pantalla completa" hidden>
+          <svg viewBox="0 0 24 24" class="ic-full"><path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg viewBox="0 0 24 24" class="ic-unfull"><path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
         <button class="icon-btn" id="btn-mute" title="Sonido" aria-label="Activar o silenciar sonido">
           <svg viewBox="0 0 24 24" class="ic-sound"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <svg viewBox="0 0 24 24" class="ic-mute"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16.5 9.5l5 5m0-5l-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -173,6 +202,14 @@
             <div class="ov-title">¡PREPÁRENSE!</div>
             <div class="count" id="count-num">3</div>
             <div class="ov-sub" id="count-paint"></div>
+          </div>
+
+          <div class="overlay dim" id="ov-loading" hidden>
+            <div class="check-card card">
+              <div class="ov-title small">CARGANDO LA OBRA…</div>
+              <div class="loading-name" id="loading-name"></div>
+              <p class="err" id="loading-err"></p>
+            </div>
           </div>
 
           <div class="overlay dim" id="ov-check" hidden>
@@ -312,6 +349,7 @@
         <div><kbd>Espacio</kbd> + arrastrar, clic derecho o dos dedos: mover la vista</div>
         <div><kbd>Ctrl</kbd>+<kbd>Z</kbd>: deshacer · <kbd>1</kbd>–<kbd>5</kbd> o <kbd>[</kbd> <kbd>]</kbd>: tamaño del pincel</div>
         <div><kbd>I</kbd> elegir color · <kbd>L</kbd> bloquear · <kbd>P</kbd> poses · flechas: mover figura</div>
+        <div><kbd>F</kbd> pantalla completa · en el móvil, toca y arrastra con un dedo para mover la vista</div>
       </div>
       <div class="row">
         <button class="btn yellow" id="btn-howto-tutorial">Tutorial interactivo</button>
@@ -365,6 +403,7 @@
 
   <script src="room.js"></script>
   <script src="paintings.js"></script>
+  <script src="artworks.js"></script>
   <script src="figure.js"></script>
   <script src="config.js"></script>
   <script src="game.js"></script>

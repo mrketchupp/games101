@@ -10,10 +10,14 @@ await Deno.mkdir(output, { recursive: true });
 await Deno.copyFile(new URL('index.html', root), new URL('index.html', output));
 await Deno.writeTextFile(new URL('.nojekyll', output), '');
 
-const game = 'escondidas-en-pintura/';
-await Deno.mkdir(new URL(game, output), { recursive: true });
-for await (const entry of Deno.readDir(new URL(game, root))) {
-  if (!entry.isFile || !/\.(html|css|js|svg|png|jpg|webp|ico|woff2|mp3|ogg|wav)$/.test(entry.name)) continue;
-  await Deno.copyFile(new URL(game + entry.name, root), new URL(game + entry.name, output));
+// Copia los archivos públicos del juego, incluidas sus subcarpetas (por ejemplo, las obras de arte).
+async function copyPublic(dir: string) {
+  await Deno.mkdir(new URL(dir, output), { recursive: true });
+  for await (const entry of Deno.readDir(new URL(dir, root))) {
+    if (entry.isDirectory) await copyPublic(dir + entry.name + '/');
+    if (!entry.isFile || !/\.(html|css|js|svg|png|jpg|webp|ico|woff2|mp3|ogg|wav)$/.test(entry.name)) continue;
+    await Deno.copyFile(new URL(dir + entry.name, root), new URL(dir + entry.name, output));
+  }
 }
+await copyPublic('escondidas-en-pintura/');
 console.log('Sitio de GitHub Pages preparado en _site/');

@@ -7,12 +7,18 @@
   'use strict';
 
   const PAINTING_COUNT = 10;
+  const ART_COUNT = 12; // obras de arte reales (artworks.js)
   const POSE_COUNT = 10;
   const MAX_PLAYERS = 8;
   const COLOR_COUNT = 8;
-  const DEFAULTS = { rounds: 3, hideTime: 120, seekTime: 30 };
+  const DEFAULTS = { rounds: 3, hideTime: 120, seekTime: 30, gallery: 'clasico' };
   const LIMITS = { rounds: [1, 2, 3, 5], hideTime: [60, 90, 120, 180], seekTime: [20, 30, 45, 60] };
-  const MS = { prepare: 3500, checkMin: 2800, checkMax: 7000, seekGrace: 2500, results: 13000 };
+  // Cada galería tiene sus cuadros y sus tiempos. Un hideTime de 0 significa «sin límite para esconderse».
+  const GALLERIES = {
+    clasico: { count: PAINTING_COUNT, hideTime: LIMITS.hideTime, seekTime: LIMITS.seekTime, hideDefault: 120, seekDefault: 30 },
+    arte: { count: ART_COUNT, hideTime: [180, 300, 600, 0], seekTime: [30, 45, 60, 90, 120], hideDefault: 300, seekDefault: 60 },
+  };
+  const MS = { prepare: 3500, checkMin: 2800, checkMax: 7000, seekGrace: 2500, results: 13000, hurry: 30000 };
   const MISS_PENALTY = 2; // segundos que suma cada toque fallido al buscar
   const EXTRA_SEEK_PER_TARGET = 15; // segundos extra por cada rival a partir del segundo
   const MAX_IMG = 400000;
@@ -27,6 +33,15 @@
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 16);
+  }
+
+  /** Nombre válido de galería; las salas guardadas antes de las galerías son «clasico». */
+  function galleryName(name) {
+    return typeof name === 'string' && Object.hasOwn(GALLERIES, name) ? name : 'clasico';
+  }
+
+  function galleryOf(name) {
+    return GALLERIES[galleryName(name)];
   }
 
   function seekLimit(settings, participantCount) {
@@ -64,6 +79,7 @@
       this.phaseMsg = { t: 'phase', phase: 'lobby', round: 0, rounds: this.settings.rounds };
       this.deck = [];
       this.painting = 0;
+      this.gallery = 'clasico';
       this.seed = 0;
       this.figures = {};
       this.participants = [];
@@ -109,6 +125,7 @@
         if (Object.hasOwn(copy, key)) room[key] = copy[key];
       }
       room.players.forEach((p) => { p.conn = null; });
+      room.settings.gallery = galleryName(room.settings.gallery);
       room.externalTimers = !!(opts.externalTimers ?? copy.externalTimers);
       room.phaseEndsAt = room.deadline;
       room.scheduleTimer();
@@ -133,7 +150,7 @@
       this.phaseEndsAt = 0;
       this.transition = null;
       switch (transition) {
-        case 'hide': this.setPhase('hide', this.settings.hideTime * 1000, 'endHide'); break;
+        case 'hide': this.setPhase('hide', this.settings.hideTime > 0 ? this.settings.hideTime * 1000 : null, 'endHide'); break;
         case 'endHide': this.endHide(); break;
         case 'finishCheck': this.finishCheck(); break;
         case 'endSeek': this.endSeek(); break;
@@ -244,13 +261,31 @@
       switch (msg.t) {
         case 'settings': {
           if (!isHost || this.inGame()) return;
-          for (const key of Object.keys(LIMITS)) {
+          if (msg.gallery != null && galleryName(msg.gallery) === msg.gallery && msg.gallery !== galleryName(this.settings.gallery)) {
+            // cada galería empieza con sus propios tiempos
+            const g = GALLERIES[msg.gallery];
+            Object.assign(this.settings, { gallery: msg.gallery, hideTime: g.hideDefault, seekTime: g.seekDefault });
+            this.deck = [];
+          }
+          const g = galleryOf(this.settings.gallery);
+          const allowed = { rounds: LIMITS.rounds, hideTime: g.hideTime, seekTime: g.seekTime };
+          for (const key of Object.keys(allowed)) {
             const v = Number(msg[key]);
-            if (msg[key] != null && LIMITS[key].includes(v)) this.settings[key] = v;
+            if (msg[key] != null && allowed[key].includes(v)) this.settings[key] = v;
           }
           this.broadcastRoom();
           break;
         }
+        case 'hurry':
+          // Sin límite para esconderse: el anfitrión puede dar a todos un último plazo.
+          if (!isHost || this.phase !== 'hide' || this.deadline) return;
+          this.deadline = now() + MS.hurry;
+          this.phaseEndsAt = this.deadline;
+          this.transition = 'endHide';
+          this.phaseMsg = Object.assign({}, this.phaseMsg, { duration: MS.hurry, hurry: true });
+          this.scheduleTimer();
+          this.broadcast(this.phaseMsg);
+          break;
         case 'start':
           if (!isHost || this.inGame()) return;
           if (this.connected().length < 2) { this.send(p, { t: 'notice', msg: 'Hacen falta al menos 2 jugadores.' }); return; }
@@ -329,7 +364,7 @@
       this.scheduleTimer();
       this.phaseMsg = Object.assign({
         t: 'phase', phase, round: this.round, rounds: this.settings.rounds,
-        painting: this.painting, seed: this.seed, duration: ms,
+        painting: this.painting, gallery: this.gallery, seed: this.seed, duration: ms,
       }, extra || {});
       this.broadcast(this.phaseMsg);
     }
@@ -352,8 +387,11 @@
       this.finds = [];
       this.done = {};
       this.participants = [];
+      const gallery = galleryName(this.settings.gallery);
+      if (this.gallery !== gallery) this.deck = [];
+      this.gallery = gallery;
       if (!this.deck.length) {
-        this.deck = Array.from({ length: PAINTING_COUNT }, (_, i) => i);
+        this.deck = Array.from({ length: GALLERIES[gallery].count }, (_, i) => i);
         for (let i = this.deck.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
@@ -462,7 +500,7 @@
   }
 
   root.HideRoom = {
-    Room, PAINTING_COUNT, POSE_COUNT, MAX_PLAYERS, COLOR_COUNT, DEFAULTS, LIMITS, MS, MISS_PENALTY,
-    cleanName, seekLimit, scoreRound,
+    Room, PAINTING_COUNT, ART_COUNT, POSE_COUNT, MAX_PLAYERS, COLOR_COUNT, DEFAULTS, LIMITS, GALLERIES, MS, MISS_PENALTY,
+    cleanName, seekLimit, scoreRound, galleryName, galleryOf,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

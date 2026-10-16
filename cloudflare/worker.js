@@ -13,7 +13,7 @@ const CHUNK_SIZE = 64 * 1024;
 const MAX_CHUNKS = 256;
 const PING = JSON.stringify({ t: 'ping' });
 const PONG = JSON.stringify({ t: 'pong' });
-const MUTATIONS = new Set(['settings', 'start', 'lobby', 'submit', 'unsubmit', 'figure', 'found', 'seekDone']);
+const MUTATIONS = new Set(['settings', 'start', 'lobby', 'submit', 'unsubmit', 'figure', 'found', 'seekDone', 'hurry']);
 
 function isUpgrade(request) {
   return request.headers.get('upgrade')?.toLowerCase() === 'websocket';

@@ -7,7 +7,7 @@ y la portada (`index.html`) los reúne todos.
 
 | Juego | De qué va | Jugadores |
 | --- | --- | --- |
-| [Escondidas en Pintura](escondidas-en-pintura/) | Píntate para camuflarte en un cuadro y encuentra a los demás contra reloj. Con tutorial. | 1 contra la CPU, o de 2 a 8 en línea |
+| [Escondidas en Pintura](escondidas-en-pintura/) | Píntate para camuflarte en un cuadro (o en una obra de arte famosa) y encuentra a los demás contra reloj. Con tutorial. | 1 contra la CPU, o de 2 a 8 en línea |
 
 ## Jugar en tu ordenador
 
@@ -63,6 +63,11 @@ pnpm deploy:multiplayer
 
 Wrangler muestra la dirección HTTPS real del Worker cuando termina el despliegue. El servicio de este
 juego utiliza la ruta `/escondidas-en-pintura/ws`.
+
+El Worker incluye las reglas de `escondidas-en-pintura/room.js`, pero GitHub Actions solo publica el cliente. **Cada vez
+que cambien las reglas hay que volver a ejecutar `pnpm deploy:multiplayer`.** Mientras tanto, el juego sigue funcionando
+con las reglas anteriores y oculta las opciones que ese servidor aún no conoce (por ejemplo, la galería de obras de arte
+en las salas).
 
 ### 2. Conectar el juego al servidor
 

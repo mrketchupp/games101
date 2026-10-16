@@ -16,6 +16,9 @@
   const PLAYER_COLORS = ['#ffd23f', '#4cc9f0', '#ff6b9a', '#7ae582', '#c77dff', '#ff9f43', '#f1f3f5', '#5c7cfa'];
   const BOT_NAMES = ['Pincelín', 'Brochita', 'Acuarela', 'Picasso.exe', 'Manchitas', 'Óleo', 'Garabato', 'Pastelito'];
   const BRUSH_SIZES = [4, 8, 14, 24, 40];
+  // Cuánto puede moverse el dedo (o el ratón) en un toque antes de convertirse en un arrastre, y margen para acertar.
+  const TAP_SLOP = { mouse: 8, touch: 14 };
+  const HIT_TOLERANCE = { mouse: 9, touch: 14 };
 
   // ---------------------------------------------------------------- utilidades
   const $ = (s) => document.querySelector(s);
@@ -123,7 +126,10 @@
   })();
 
   // ---------------------------------------------------------------- cuadros
+  // Dos galerías: los cuadros clásicos se generan por código (índice + semilla) y las obras de arte son imágenes.
   const paintCache = new Map();
+  const isArt = (gallery) => gallery === 'arte';
+  const paintKey = (gallery, idx, seed) => (isArt(gallery) ? 'arte:' + idx : idx + ':' + seed);
 
   function extractPalette(data) {
     const counts = new Map();
@@ -140,22 +146,116 @@
       .map(([k]) => '#' + k.toString(16).padStart(6, '0'));
   }
 
+  /** Paleta de una obra con degradados: agrupa colores parecidos y descarta los casi repetidos. */
+  function extractArtPalette(data) {
+    const buckets = new Map();
+    for (let i = 0; i < data.length; i += 4 * 3) {
+      const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
+      let b = buckets.get(key);
+      if (!b) { b = [0, 0, 0, 0]; buckets.set(key, b); }
+      b[0] += data[i];
+      b[1] += data[i + 1];
+      b[2] += data[i + 2];
+      b[3]++;
+    }
+    const picked = [];
+    for (const b of [...buckets.values()].sort((x, y) => y[3] - x[3])) {
+      const c = [b[0] / b[3], b[1] / b[3], b[2] / b[3]].map(Math.round);
+      if (picked.some((o) => (o[0] - c[0]) ** 2 + (o[1] - c[1]) ** 2 + (o[2] - c[2]) ** 2 < 900)) continue;
+      picked.push(c);
+      if (picked.length >= 18) break;
+    }
+    return picked.map((c) => hex(c[0], c[1], c[2]));
+  }
+
+  function remember(key, p) {
+    paintCache.set(key, p);
+    if (paintCache.size > 6) paintCache.delete(paintCache.keys().next().value);
+    return p;
+  }
+
+  /** Cuadro clásico: se genera al momento con su índice y su semilla. */
   function getPainting(idx, seed) {
-    const key = idx + ':' + seed;
+    const key = paintKey('clasico', idx, seed);
     let p = paintCache.get(key);
     if (!p) {
       const canvas = makeCanvas(PW, PH);
       Paintings.render(idx, seed, canvas);
       const data = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, PW, PH).data;
-      p = { canvas, data, idx, seed, name: Paintings.names[idx % Paintings.count], palette: extractPalette(data) };
-      paintCache.set(key, p);
-      if (paintCache.size > 6) paintCache.delete(paintCache.keys().next().value);
+      p = remember(key, {
+        canvas, data, idx, seed, key, gallery: 'clasico', name: Paintings.names[idx % Paintings.count], palette: extractPalette(data),
+      });
     }
     return p;
   }
 
-  /** % de la figura cuyo color coincide (casi) con el cuadro que tapa. */
-  function computeBlend(figData, fx, fy, pdata) {
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('No se pudo cargar ' + src));
+      img.src = src;
+    });
+  }
+
+  const artJobs = new Map();
+  /** Descarga y prepara una obra de arte, con reintentos. */
+  function loadArtwork(idx) {
+    const key = paintKey('arte', idx);
+    if (paintCache.has(key)) return Promise.resolve(paintCache.get(key));
+    if (!artJobs.has(key)) {
+      const job = (async () => {
+        let error;
+        for (let attempt = 0; attempt < 3; attempt++) {
+          if (attempt) await new Promise((r) => setTimeout(r, 1200 * attempt));
+          try {
+            const img = await loadImage(Artworks.url(idx));
+            const canvas = makeCanvas(PW, PH);
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            ctx.drawImage(img, 0, 0, PW, PH);
+            const data = ctx.getImageData(0, 0, PW, PH).data;
+            const info = Artworks.info(idx);
+            return remember(key, {
+              canvas, data, idx, seed: 0, key, gallery: 'arte', name: info.name, artist: info.artist, palette: extractArtPalette(data),
+            });
+          } catch (e) { error = e; }
+        }
+        throw error;
+      })();
+      artJobs.set(key, job);
+      job.finally(() => artJobs.delete(key)).catch(() => {});
+    }
+    return artJobs.get(key);
+  }
+
+  /** El cuadro de una fase si ya está listo; null si la obra aún se está descargando. */
+  function cachedPainting(m) {
+    return isArt(m.gallery) ? paintCache.get(paintKey('arte', m.painting)) || null : getPainting(m.painting, m.seed);
+  }
+
+  function paintingFor(m) {
+    return isArt(m.gallery) ? loadArtwork(m.painting) : Promise.resolve(getPainting(m.painting, m.seed));
+  }
+
+  const artPrefetch = [];
+  /** Calienta la caché del navegador con todas las obras (≈1,5 MB) para que cada ronda empiece sin esperas. */
+  function prefetchArt() {
+    if (artPrefetch.length || location.protocol === 'file:') return;
+    for (let i = 0; i < Artworks.count; i++) {
+      const img = new Image();
+      img.src = Artworks.url(i);
+      artPrefetch.push(img);
+    }
+  }
+
+  /**
+   * % de la figura cuyo color coincide (casi) con el cuadro que tapa. En las obras de arte, llenas de textura,
+   * basta con que ese color aparezca a 2 píxeles o menos.
+   */
+  function computeBlend(figData, fx, fy, painting) {
+    const pdata = painting.data;
+    const r = isArt(painting.gallery) ? 2 : 0;
     let total = 0;
     let ok = 0;
     for (let j = 0; j < FB; j++) {
@@ -167,11 +267,21 @@
         const px = fx + i;
         if (px < 0 || px >= PW) continue;
         total++;
-        const q = (py * PW + px) * 4;
-        const dr = figData[k] - pdata[q];
-        const dg = figData[k + 1] - pdata[q + 1];
-        const db = figData[k + 2] - pdata[q + 2];
-        if (dr * dr + dg * dg + db * db < 1600) ok++;
+        let hit = false;
+        for (let dy = -r; dy <= r && !hit; dy++) {
+          const qy = py + dy;
+          if (qy < 0 || qy >= PH) continue;
+          for (let dx = -r; dx <= r; dx++) {
+            const qx = px + dx;
+            if (qx < 0 || qx >= PW) continue;
+            const q = (qy * PW + qx) * 4;
+            const dr = figData[k] - pdata[q];
+            const dg = figData[k + 1] - pdata[q + 1];
+            const db = figData[k + 2] - pdata[q + 2];
+            if (dr * dr + dg * dg + db * db < 1600) { hit = true; break; }
+          }
+        }
+        if (hit) ok++;
       }
     }
     return total ? Math.round((ok / total) * 1000) / 10 : 0;
@@ -261,7 +371,7 @@
     }
     ctx.globalCompositeOperation = 'source-over';
     const data = ctx.getImageData(0, 0, FB, FB).data;
-    return { x, y, pose, img: c.toDataURL('image/png'), blend: computeBlend(data, x, y, p.data) };
+    return { x, y, pose, img: c.toDataURL('image/png'), blend: computeBlend(data, x, y, p) };
   }
 
   class Bot {
@@ -291,7 +401,8 @@
         this.phase = m;
         if (m.phase === 'hide') {
           const [a, b] = this.level.readyAt;
-          const sec = Math.min((m.duration / 1000) * 0.85, a + Math.random() * (b - a));
+          const want = a + Math.random() * (b - a);
+          const sec = m.duration ? Math.min((m.duration / 1000) * 0.85, want) : want; // sin límite: a su ritmo
           this.later(() => this.hide(m, 'submit'), sec * 1000);
         } else if (m.phase === 'seek') {
           this.seek(m);
@@ -301,16 +412,21 @@
       }
     }
 
-    hide(m, type) {
+    async hide(m, type) {
       if (!this.fig || this.figSeed !== m.seed) {
-        this.fig = makeBotFigure(getPainting(m.painting, m.seed), this.level);
-        this.figSeed = m.seed;
+        const p = await paintingFor(m);
+        if (!this.alive) return;
+        if (!this.fig || this.figSeed !== m.seed) {
+          this.fig = makeBotFigure(p, this.level);
+          this.figSeed = m.seed;
+        }
       }
       this.send({ t: type, fig: this.fig });
     }
 
     async seek(m) {
-      const p = getPainting(m.painting, m.seed);
+      const p = await paintingFor(m);
+      if (!this.alive || this.phase !== m) return;
       const limit = m.limit / 1000;
       const start = performance.now();
       const plan = [];
@@ -318,8 +434,10 @@
         if (id === this.player.id) continue;
         const f = m.figs[id];
         const img = await loadFigure(f.img);
-        const vis = 1 - computeBlend(img.data, f.x, f.y, p.data) / 100;
-        const t = (1.5 + 50 * Math.pow(Math.max(0, 1 - vis / 0.4), 2.5)) * this.level.seekMul * Math.exp(gauss() * 0.35);
+        const vis = 1 - computeBlend(img.data, f.x, f.y, p) / 100;
+        // en una obra de arte, con tanto detalle, también a la CPU le cuesta más encontrar
+        const t = (1.5 + 50 * Math.pow(Math.max(0, 1 - vis / 0.4), 2.5)) * this.level.seekMul * Math.exp(gauss() * 0.35)
+          * (isArt(m.gallery) ? 1.6 : 1);
         plan.push({ id, t: Math.max(1.2, t) });
       }
       if (!this.alive || this.phase !== m) return;
@@ -514,6 +632,7 @@
     screen: 'scr-menu',
     phase: 'none',
     phaseMsg: null,
+    pendingPhase: null, // fase que espera a que termine de descargarse su obra de arte
     phaseEnd: null,
     phaseDur: 0,
     round: 0,
@@ -557,6 +676,7 @@
   // ---------------------------------------------------------------- pantallas y avisos
   function showScreen(id) {
     G.screen = id;
+    if (id !== 'scr-menu') BackGuard.arm();
     $$('.screen').forEach((s) => s.classList.toggle('active', s.id === id));
     document.body.classList.toggle('show-menu-bg', id !== 'scr-game');
     if (id === 'scr-game') requestAnimationFrame(layout);
@@ -585,16 +705,22 @@
     bannerTimer = setTimeout(() => { b.hidden = true; }, 1650);
   }
 
-  function confirmBox(text) {
+  let confirmCancel = null;
+  function confirmBox(text, yes = 'Salir', no = 'Seguir jugando') {
+    if (confirmCancel) confirmCancel();
     return new Promise((resolve) => {
       $('#confirm-text').textContent = text;
+      $('#btn-confirm-yes').textContent = yes;
+      $('#btn-confirm-no').textContent = no;
       $('#confirm').hidden = false;
       const done = (v) => {
         $('#confirm').hidden = true;
         $('#btn-confirm-yes').onclick = null;
         $('#btn-confirm-no').onclick = null;
+        confirmCancel = null;
         resolve(v);
       };
+      confirmCancel = () => done(false);
       $('#btn-confirm-yes').onclick = () => done(true);
       $('#btn-confirm-no').onclick = () => done(false);
     });
@@ -708,12 +834,14 @@
     clampView();
   }
 
-  function toPaint(e) {
-    const r = view.getBoundingClientRect();
-    const sx = e.clientX - r.left;
-    const sy = e.clientY - r.top;
+  function fromScreen(sx, sy) {
     const v = G.view;
     return { sx, sy, x: (sx - v.ox) / v.s, y: (sy - v.oy) / v.s };
+  }
+
+  function toPaint(e) {
+    const r = view.getBoundingClientRect();
+    return fromScreen(e.clientX - r.left, e.clientY - r.top);
   }
 
   // ---------------------------------------------------------------- figura propia
@@ -844,7 +972,7 @@
   function figurePayload() {
     recomposite();
     const data = G.figCtx.getImageData(0, 0, FB, FB).data;
-    G.myBlend = computeBlend(data, G.fig.x, G.fig.y, G.painting.data);
+    G.myBlend = computeBlend(data, G.fig.x, G.fig.y, G.painting);
     return { x: G.fig.x, y: G.fig.y, pose: G.fig.pose, img: G.figCanvas.toDataURL('image/png'), blend: G.myBlend };
   }
 
@@ -999,8 +1127,12 @@
       b.disabled = !editing;
     }
     $('.stool[data-act="pick"]').classList.toggle('on', G.tool === 'pick');
+    // «Mover vista» solo hace falta mientras pintas: al buscar, arrastrar con un dedo ya mueve la vista
+    $('.stool[data-act="hand"]').hidden = !editing;
     $('.stool[data-act="hand"]').classList.toggle('on', G.tool === 'hand');
     $('#side-tools').hidden = !['hide', 'seek', 'results', 'check', 'prepare'].includes(G.phase);
+    const host = G.room && G.room.hostId === G.me;
+    $('#btn-hurry').hidden = !(G.mode === 'online' && hide && G.phaseEnd == null && host);
     if (!editing) closePopovers();
     updateStatus();
     setCursor();
@@ -1013,6 +1145,7 @@
 
   function updateStatus() {
     const ph = G.phase;
+    if (ph === 'loading') return setStatus('CARGANDO LA OBRA…', 'Un momento');
     if (ph === 'prepare') return setStatus('¡PREPÁRENSE!', 'Un nuevo cuadro… ¡fíjate bien en él!');
     if (ph === 'hide') {
       if (!meActive()) return setStatus('LOS DEMÁS SE ESTÁN ESCONDIENDO', 'Jugarás en la siguiente ronda');
@@ -1045,8 +1178,10 @@
   }
 
   // ---------------------------------------------------------------- entrada (ratón / táctil)
+  // Cada puntero guarda dónde y cuándo empezó, para distinguir toques, arrastres y pellizcos.
   const pointers = new Map();
   let action = null;
+  const slopOf = (type) => (type === 'mouse' ? TAP_SLOP.mouse : TAP_SLOP.touch);
 
   function startPinch() {
     if (action && action.type === 'paint') cancelStroke();
@@ -1084,12 +1219,21 @@
   view.addEventListener('pointerdown', (e) => {
     Sound.unlock();
     closePopovers();
+    // El primer dedo de un toque nuevo implica que no queda ningún otro en pantalla: si guardábamos alguno
+    // (porque se perdió su pointerup), lo olvidamos. Si no, cada toque posterior parecería un pellizco.
+    if (e.isPrimary) {
+      for (const [id, p] of pointers) if (p.type === e.pointerType) pointers.delete(id);
+      if (!pointers.size && action) {
+        if (action.type === 'paint') { G.stroke = null; recomposite(); }
+        action = null;
+      }
+    }
     try { view.setPointerCapture(e.pointerId); } catch { /* ignorar */ }
     const pt = toPaint(e);
-    pointers.set(e.pointerId, { sx: pt.sx, sy: pt.sy });
+    pointers.set(e.pointerId, { sx: pt.sx, sy: pt.sy, x0: pt.sx, y0: pt.sy, t0: performance.now(), type: e.pointerType });
     if (pointers.size === 2) { startPinch(); setCursor(); return; }
     if (pointers.size > 2) return;
-    if (e.button === 1 || e.button === 2 || G.spaceDown || G.tool === 'hand') {
+    if (e.button === 1 || e.button === 2 || G.spaceDown || (G.tool === 'hand' && canEdit())) {
       action = { type: 'pan', sx: pt.sx, sy: pt.sy, ox: G.view.ox, oy: G.view.oy };
       setCursor();
       return;
@@ -1101,7 +1245,8 @@
       action = { type: 'paint' };
       return;
     }
-    action = { type: 'tap', sx: pt.sx, sy: pt.sy, ox: G.view.ox, oy: G.view.oy };
+    // Fuera de la pintura, un toque marca (al buscar) y un arrastre mueve la vista.
+    action = { type: 'tap', sx: pt.sx, sy: pt.sy, ox: G.view.ox, oy: G.view.oy, slop: slopOf(e.pointerType) };
   });
 
   view.addEventListener('pointermove', (e) => {
@@ -1118,7 +1263,7 @@
         clampView();
         break;
       case 'tap':
-        if (Math.hypot(pt.sx - action.sx, pt.sy - action.sy) > 8) {
+        if (Math.hypot(pt.sx - action.sx, pt.sy - action.sy) > action.slop) {
           action = { type: 'pan', sx: action.sx, sy: action.sy, ox: action.ox, oy: action.oy };
           setCursor();
         }
@@ -1137,17 +1282,40 @@
   });
 
   function endPointer(e) {
-    const had = pointers.delete(e.pointerId);
-    if (!had || !action) return;
+    const p = pointers.get(e.pointerId);
+    if (!p) return;
+    pointers.delete(e.pointerId);
+    if (!action) return;
+    const done = e.type === 'pointerup';
     if (action.type === 'pinch') {
-      if (pointers.size === 0) { action = null; setCursor(); }
+      const rest = [...pointers.values()];
+      if (rest.length >= 2) {
+        startPinch();
+      } else if (rest.length === 1) {
+        // Un toque rápido mientras otro dedo descansa en la pantalla (el pulgar que sujeta el móvil) sigue
+        // siendo un toque: deshacemos el zoom accidental y lo contamos como intento de encontrar.
+        const now = performance.now();
+        const tapWhileResting = done && G.phase === 'seek' && now - p.t0 < 350 && p.t0 - rest[0].t0 > 300
+          && Math.hypot(p.sx - p.x0, p.sy - p.y0) < slopOf(p.type);
+        if (tapWhileResting) {
+          G.view.z = action.z0;
+          G.view.ox = action.ox0;
+          G.view.oy = action.oy0;
+          clampView();
+          guess(fromScreen(p.x0, p.y0), p.type);
+        }
+        // con el dedo que queda, se sigue moviendo la vista
+        action = { type: 'pan', sx: rest[0].sx, sy: rest[0].sy, ox: G.view.ox, oy: G.view.oy };
+      } else {
+        action = null;
+      }
+      setCursor();
       return;
     }
     const pt = toPaint(e);
-    const done = e.type === 'pointerup';
     if (action.type === 'paint') { G.stroke = null; recomposite(); }
     else if (action.type === 'pick' && done) pickColorAt(pt);
-    else if (action.type === 'tap' && done && G.phase === 'seek') guess(pt);
+    else if (action.type === 'tap' && done && G.phase === 'seek') guess(pt, e.pointerType);
     action = null;
     setCursor();
   }
@@ -1155,6 +1323,8 @@
   view.addEventListener('pointercancel', endPointer);
   view.addEventListener('pointerleave', () => { if (!action) G.hover = null; });
   view.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Safari (iPhone/iPad) ignora user-scalable=no: evitamos que un pellizco fuera del cuadro amplíe toda la página.
+  document.addEventListener('gesturestart', (e) => { if (G.screen === 'scr-game') e.preventDefault(); });
   view.addEventListener('wheel', (e) => {
     e.preventDefault();
     const pt = toPaint(e);
@@ -1173,6 +1343,7 @@
       e.preventDefault();
       return;
     }
+    if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey) { Fullscreen.toggle(); return; }
     if (G.screen !== 'scr-game') return;
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
@@ -1233,11 +1404,12 @@
     return false;
   }
 
-  function guess(pt) {
+  function guess(pt, pointerType) {
     const s = G.seek;
     if (!s || !s.participant || s.done || !s.loaded) return;
     if (pt.x < 0 || pt.y < 0 || pt.x >= PW || pt.y >= PH) return;
-    const tol = Math.max(3, 9 / G.view.s);
+    // con el dedo se apunta peor que con el ratón: algo más de margen alrededor de la figura
+    const tol = Math.max(3, (pointerType === 'mouse' ? HIT_TOLERANCE.mouse : HIT_TOLERANCE.touch) / G.view.s);
     for (const t of s.targets) {
       if (s.found.has(t.id) || !hitFig(t, pt.x, pt.y, tol)) continue;
       const time = Math.round(Math.min(s.limit, seekElapsed()) * 100) / 100;
@@ -1312,18 +1484,60 @@
 
   // ---------------------------------------------------------------- fases
   function hideOverlays() {
+    $('#ov-loading').hidden = true;
     $('#ov-countdown').hidden = true;
     $('#ov-check').hidden = true;
     $('#ov-results').hidden = true;
     $('#btn-unpeek').hidden = true;
   }
 
+  /** Fases que se juegan sobre el cuadro. */
+  const paintedPhase = (ph) => ['prepare', 'hide', 'check', 'seek', 'results'].includes(ph);
+
+  /** La obra de esta fase aún se descarga: lo indicamos y entramos en la fase en cuanto esté lista. */
+  function waitForPainting(m) {
+    G.pendingPhase = m;
+    G.phase = 'loading';
+    G.painting = null;
+    closePopovers();
+    action = null;
+    pointers.clear();
+    if (G.screen !== 'scr-game') showScreen('scr-game');
+    hideOverlays();
+    const info = Artworks.info(m.painting);
+    $('#loading-name').textContent = `«${info.name}» · ${info.artist}`;
+    $('#loading-err').textContent = '';
+    $('#ov-loading').hidden = false;
+    $('#hud-round').textContent = `Ronda ${m.round}/${m.rounds}`;
+    $('#hud-paint').textContent = info.name;
+    $('#spectate').hidden = true;
+    updateControls();
+    updateHudSub();
+    paintingFor(m).then(() => {
+      if (G.pendingPhase === m) enterPhase(m);
+    }, () => {
+      if (G.pendingPhase !== m) return;
+      $('#loading-err').textContent = 'No se pudo descargar la obra. Reintentando…';
+      setTimeout(() => { if (G.pendingPhase === m) waitForPainting(m); }, 4000);
+    });
+  }
+
   function enterPhase(m) {
+    if (paintedPhase(m.phase) && !cachedPainting(m)) { waitForPainting(m); return; }
+    G.pendingPhase = null;
     const same = m.phase === G.phase && m.round === G.round && m.phase !== 'lobby';
+    const hurried = !!(G.phaseMsg && G.phaseMsg.hurry);
     G.phaseMsg = m;
-    G.phaseEnd = m.duration != null ? performance.now() + m.duration : null;
+    // el plazo cuenta desde que llegó el mensaje, aunque la obra haya tardado en descargarse
+    G.phaseEnd = m.duration != null ? (m.at || performance.now()) + m.duration : null;
     G.phaseDur = m.duration || 0;
-    if (same) return; // reconexión: seguimos donde estábamos
+    if (same) {
+      // reconexión (seguimos donde estábamos) o el anfitrión dio los últimos 30 segundos
+      if (m.phase === 'hide' && m.hurry && !hurried) { banner('¡ÚLTIMOS 30 S!'); Sound.go(); }
+      updateControls();
+      updateHudSub();
+      return;
+    }
     G.phase = m.phase;
     G.round = m.round;
     G.rounds = m.rounds;
@@ -1341,14 +1555,17 @@
     }
     if (m.phase === 'final') { showFinal(m); return; }
 
-    if (!G.painting || G.painting.idx !== m.painting || G.painting.seed !== m.seed) {
-      G.painting = getPainting(m.painting, m.seed);
+    const painting = cachedPainting(m);
+    if (G.painting !== painting) {
+      G.painting = painting;
       renderSwatches($('#palette'), G.painting.palette);
     }
+    if (m.phase !== 'hide') G.tool = 'brush';
     if (m.phase === 'prepare' || G.figRound !== m.round) resetOwnFigure(m.round);
     if (G.screen !== 'scr-game') showScreen('scr-game');
     $('#hud-round').textContent = G.mode === 'tutorial' ? 'Tutorial' : `Ronda ${m.round}/${m.rounds}`;
     $('#hud-paint').textContent = G.painting.name;
+    $('#hud-paint').title = G.painting.artist ? `${G.painting.name} · ${G.painting.artist}` : G.painting.name;
     hideOverlays();
     $('#spectate').hidden = meActive();
 
@@ -1360,7 +1577,7 @@
         G.fx = [];
         resetZoom();
         $('#ov-countdown').hidden = false;
-        $('#count-paint').textContent = '«' + G.painting.name + '»';
+        $('#count-paint').textContent = '«' + G.painting.name + '»' + (G.painting.artist ? ' · ' + G.painting.artist : '');
         break;
       case 'hide':
         G.tool = 'brush';
@@ -1403,7 +1620,7 @@
       $('#check-rate').textContent = 'Comprobando las mezclas de todos';
       return;
     }
-    const blend = computeBlend(G.figCtx.getImageData(0, 0, FB, FB).data, G.fig.x, G.fig.y, G.painting.data);
+    const blend = computeBlend(G.figCtx.getImageData(0, 0, FB, FB).data, G.fig.x, G.fig.y, G.painting);
     G.myBlend = blend;
     requestAnimationFrame(() => { fill.style.width = blend + '%'; });
     const t0 = performance.now();
@@ -1497,7 +1714,9 @@
     let text = '';
     if (G.mode === 'tutorial' && (G.phase === 'hide' || G.phase === 'check')) text = 'SIN PRISA';
     else if (G.phase === 'prepare') text = `${act.length} JUGADORES`;
-    else if (G.phase === 'hide') text = `LISTOS ${act.filter((p) => p.ready).length}/${act.length}`;
+    else if (G.phase === 'hide') {
+      text = (G.phaseEnd == null ? 'SIN LÍMITE · ' : '') + `LISTOS ${act.filter((p) => p.ready).length}/${act.length}`;
+    }
     else if (G.phase === 'check') text = 'COMPROBANDO';
     else if (G.phase === 'seek') {
       const s = G.seek;
@@ -1518,9 +1737,10 @@
     let remain = G.phaseEnd != null ? (G.phaseEnd - now) / 1000 : 0;
     const s = G.seek;
     if (G.phase === 'seek' && s && s.participant) remain = s.done ? 0 : s.limit - seekElapsed();
-    if (G.phase === 'results' || G.phase === 'prepare' || G.phase === 'check') timer.textContent = '';
-    else timer.textContent = fmtClock(remain);
-    const hurry = (G.phase === 'hide' && remain <= 10) || (G.phase === 'seek' && s && s.participant && !s.done && remain <= 5);
+    const unlimited = G.phase === 'hide' && G.phaseEnd == null;
+    if (['results', 'prepare', 'check', 'loading'].includes(G.phase)) timer.textContent = '';
+    else timer.textContent = unlimited ? '∞' : fmtClock(remain);
+    const hurry = (G.phase === 'hide' && !unlimited && remain <= 10) || (G.phase === 'seek' && s && s.participant && !s.done && remain <= 5);
     timer.classList.toggle('hurry', hurry && remain > 0);
     const whole = Math.ceil(remain);
     if (G.phase === 'prepare') {
@@ -1753,7 +1973,7 @@
         if (G.mode === 'online') {
           setBusy(false);
           showOnlineNotice(null);
-          history.replaceState(null, '', '?sala=' + m.code);
+          history.replaceState(history.state, '', '?sala=' + m.code);
         }
         break;
       case 'room':
@@ -1767,6 +1987,7 @@
         if (G.screen === 'scr-game') updateControls();
         break;
       case 'phase':
+        m.at = performance.now();
         enterPhase(m);
         break;
       case 'collect':
@@ -1816,10 +2037,14 @@
       box.append(chip);
     }
     const isHost = r.hostId === G.me;
+    // un servidor sin galerías (anterior a las obras de arte) no envía «gallery»: entonces no la ofrecemos
+    const gallery = r.settings.gallery || 'clasico';
+    $('#lobby-gallery').hidden = !('gallery' in r.settings);
+    showGalleryOptions($('#lobby-settings'), gallery);
+    if (isArt(gallery)) prefetchArt();
     $$('[data-room]').forEach((seg) => {
-      const key = seg.dataset.room;
       seg.classList.toggle('locked', !isHost);
-      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', Number(b.dataset.v) === r.settings[key]));
+      markSeg(seg, r.settings[seg.dataset.room]);
     });
     const count = r.players.filter((p) => p.connected).length;
     const start = $('#btn-lobby-start');
@@ -1861,20 +2086,41 @@
     G.seek = null;
     G.figs = {};
     G.painting = null;
+    G.pendingPhase = null;
+    G.phaseMsg = null;
     action = null;
     pointers.clear();
     closePopovers();
-    history.replaceState(null, '', location.pathname);
+    if (confirmCancel) confirmCancel();
+    history.replaceState(history.state, '', location.pathname);
     renderMenuBackground();
     showScreen('scr-menu');
   }
 
-  const cpuOpts = Object.assign({ bots: 1, diff: 'normal', rounds: 3, hideTime: 90 }, store.get('cpu', {}));
+  const { galleryName, galleryOf } = window.HideRoom;
+  const cpuOpts = Object.assign({ bots: 1, diff: 'normal', rounds: 3, hideTime: 90, gallery: 'clasico' }, store.get('cpu', {}));
+  // desde un archivo local el navegador no deja leer los píxeles de las imágenes: solo cuadros clásicos
+  const artAvailable = location.protocol !== 'file:';
+  cpuOpts.gallery = artAvailable ? galleryName(cpuOpts.gallery) : 'clasico';
+  if (!galleryOf(cpuOpts.gallery).hideTime.includes(cpuOpts.hideTime)) cpuOpts.hideTime = galleryOf(cpuOpts.gallery).hideDefault;
+
+  /** Muestra solo las opciones (botones y notas con data-gal) de la galería elegida. */
+  function showGalleryOptions(box, gallery) {
+    box.querySelectorAll('[data-gal]').forEach((e) => { e.hidden = !e.dataset.gal.split(' ').includes(gallery); });
+  }
+
+  function markSeg(seg, value) {
+    seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === String(value)));
+  }
 
   function startCpu() {
     if (G.link) leaveGame();
     store.set('cpu', cpuOpts);
-    const room = new Room('CPU', { settings: { rounds: cpuOpts.rounds, hideTime: cpuOpts.hideTime, seekTime: 30 } });
+    const gallery = galleryOf(cpuOpts.gallery);
+    if (isArt(cpuOpts.gallery)) prefetchArt();
+    const room = new Room('CPU', {
+      settings: { rounds: cpuOpts.rounds, hideTime: cpuOpts.hideTime, seekTime: gallery.seekDefault, gallery: cpuOpts.gallery },
+    });
     G.mode = 'cpu';
     G.localRoom = room;
     G.link = new LocalLink(room, onMessage);
@@ -2287,7 +2533,7 @@
       if (now - this.lastCheck > 150) {
         this.lastCheck = now;
         if (s.meter && G.phase === 'hide' && G.painting) {
-          this.blend = computeBlend(G.figCtx.getImageData(0, 0, FB, FB).data, G.fig.x, G.fig.y, G.painting.data);
+          this.blend = computeBlend(G.figCtx.getImageData(0, 0, FB, FB).data, G.fig.x, G.fig.y, G.painting);
           $('#coach-meter-fill').style.width = this.blend + '%';
           $('#coach-meter-pct').textContent = Math.round(this.blend) + '%';
         }
@@ -2371,6 +2617,89 @@
     },
   };
 
+  // ---------------------------------------------------------------- pantalla completa
+  const iOS = /iP(hone|od|ad)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const standalone = navigator.standalone === true || window.matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
+
+  const Fullscreen = {
+    get supported() { return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled); },
+    get active() { return !!(document.fullscreenElement || document.webkitFullscreenElement); },
+    toggle() {
+      if (!this.supported) {
+        // el iPhone no deja poner una página a pantalla completa, pero sí abrirla como app desde el inicio
+        if (iOS && !standalone) toast('Para jugar a pantalla completa en iPhone: Compartir → «Añadir a pantalla de inicio» y ábrelo desde allí.');
+        return;
+      }
+      const d = document;
+      try {
+        const r = this.active
+          ? (d.exitFullscreen || d.webkitExitFullscreen).call(d)
+          : (d.documentElement.requestFullscreen || d.documentElement.webkitRequestFullscreen).call(d.documentElement, { navigationUI: 'hide' });
+        if (r && r.catch) r.catch(() => toast('No se pudo cambiar a pantalla completa', 'bad'));
+      } catch {
+        toast('No se pudo cambiar a pantalla completa', 'bad');
+      }
+    },
+    sync() { document.body.classList.toggle('is-full', Fullscreen.active); },
+  };
+
+  // ---------------------------------------------------------------- botón «atrás»
+  // Fuera del menú dejamos una entrada de historial «de guarda». Así, «atrás» (o el gesto de volver del móvil)
+  // vuelve al menú, o pide confirmación si estás en una partida, en lugar de sacarte de la página.
+  const BackGuard = {
+    armed: false,
+    arm() {
+      if (this.armed) return;
+      try {
+        // en una sala, la dirección conserva el código para poder volver a entrar si se recarga
+        history.pushState({ eepGuard: true }, '', G.mode === 'online' && G.code ? '?sala=' + G.code : location.href);
+        this.armed = true;
+      } catch { /* sin historial disponible */ }
+    },
+  };
+
+  async function onBack() {
+    BackGuard.armed = false;
+    if (confirmCancel) { BackGuard.arm(); confirmCancel(); return; }
+    if (!$('#howto').hidden || !$('#welcome').hidden) {
+      $('#howto').hidden = true;
+      if (!$('#welcome').hidden) { $('#welcome').hidden = true; store.set('tutorialSeen', true); }
+      if (G.screen !== 'scr-menu') BackGuard.arm();
+      return;
+    }
+    switch (G.screen) {
+      case 'scr-menu':
+        history.back(); // ya estabas en el menú: ahora sí, «atrás» sale del juego
+        return;
+      case 'scr-game': case 'scr-lobby': case 'scr-final': {
+        BackGuard.arm();
+        if (G.mode === 'tutorial') {
+          if (await confirmBox('¿Salir del tutorial?')) Tutorial.finish('menu');
+        } else if (G.screen === 'scr-final' && G.mode !== 'online') {
+          leaveGame();
+        } else if (await confirmBox(G.screen === 'scr-game' ? '¿Salir de la partida?' : '¿Salir de la sala?')) {
+          leaveGame();
+        }
+        return;
+      }
+      default:
+        leaveGame(); // configurar CPU o entrar en línea: volvemos al menú
+    }
+  }
+
+  window.addEventListener('popstate', (e) => {
+    if (e.state && e.state.eepGuard) { BackGuard.armed = true; return; } // «adelante» hasta la guarda
+    onBack();
+  });
+
+  // Recargar o cerrar la pestaña en mitad de una partida pide confirmación (en los navegadores que lo permiten).
+  window.addEventListener('beforeunload', (e) => {
+    const playing = (G.mode === 'online' && G.me) || (G.mode === 'cpu' && G.screen === 'scr-game');
+    if (!playing) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
   // ---------------------------------------------------------------- botones
   function bindSeg(selector, getVal, onPick) {
     $$(selector).forEach((seg) => {
@@ -2399,7 +2728,11 @@
     renderSwatches($('#recent'), []);
     renderMenuBackground();
 
-    $('#btn-cpu').onclick = () => { Sound.unlock(); showScreen('scr-cpu'); };
+    $('#btn-cpu').onclick = () => {
+      Sound.unlock();
+      showScreen('scr-cpu');
+      if (isArt(cpuOpts.gallery)) prefetchArt();
+    };
     $('#btn-online').onclick = () => {
       Sound.unlock();
       const offline = location.protocol === 'file:';
@@ -2432,13 +2765,29 @@
     $$('[data-back]').forEach((b) => { b.onclick = () => leaveGame(); });
 
     bindSeg('[data-cpu]', (k) => cpuOpts[k], (key, val, seg) => {
-      cpuOpts[key] = key === 'diff' ? val : Number(val);
-      seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === val));
+      if (key === 'gallery') {
+        if (isArt(val) && !artAvailable) return;
+        cpuOpts.gallery = val;
+        // cada galería tiene sus tiempos: si el elegido no existe en ella, usamos el suyo por defecto
+        const g = galleryOf(val);
+        if (!g.hideTime.includes(cpuOpts.hideTime)) cpuOpts.hideTime = g.hideDefault;
+        markSeg($('[data-cpu="hideTime"]'), cpuOpts.hideTime);
+        showGalleryOptions($('#scr-cpu'), val);
+        if (isArt(val)) prefetchArt();
+      } else {
+        cpuOpts[key] = key === 'diff' ? val : Number(val);
+      }
+      markSeg(seg, val);
       store.set('cpu', cpuOpts);
     });
+    showGalleryOptions($('#scr-cpu'), cpuOpts.gallery);
+    if (!artAvailable) {
+      $('[data-cpu="gallery"] [data-v="arte"]').disabled = true;
+      $('#cpu-art-file').hidden = false;
+    }
     bindSeg('[data-room]', () => null, (key, val) => {
       if (!G.room || G.room.hostId !== G.me || !G.link) return;
-      G.link.send({ t: 'settings', [key]: Number(val) });
+      G.link.send({ t: 'settings', [key]: key === 'gallery' ? val : Number(val) });
     });
 
     $('#btn-cpu-start').onclick = () => { Sound.unlock(); startCpu(); };
@@ -2467,6 +2816,18 @@
     $('#btn-final-again').onclick = () => { if (G.link) G.link.send({ t: 'start' }); };
     $('#btn-final-lobby').onclick = () => { if (G.link) G.link.send({ t: 'lobby' }); };
     $('#btn-final-menu').onclick = () => leaveGame();
+
+    $('#btn-hurry').onclick = async () => {
+      if (!(await confirmBox('¿Dar a todos 30 segundos para terminar de esconderse?', '¡30 segundos!', 'Todavía no'))) return;
+      if (G.link && G.phase === 'hide' && G.phaseEnd == null) G.link.send({ t: 'hurry' });
+    };
+    // botones de pantalla completa: ocultos donde no se puede (salvo en iPhone, que explica cómo hacerlo)
+    for (const b of [$('#btn-full'), $('#btn-full-menu')]) {
+      b.hidden = !(Fullscreen.supported || (iOS && !standalone));
+      b.onclick = () => Fullscreen.toggle();
+    }
+    document.addEventListener('fullscreenchange', Fullscreen.sync);
+    document.addEventListener('webkitfullscreenchange', Fullscreen.sync);
 
     $('#btn-mute').onclick = () => {
       const m = Sound.toggle();

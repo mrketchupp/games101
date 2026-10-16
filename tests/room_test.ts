@@ -1,7 +1,10 @@
 import "../escondidas-en-pintura/room.js";
+import "../escondidas-en-pintura/artworks.js";
 
 // deno-lint-ignore no-explicit-any
-const { Room, MS } = (globalThis as any).HideRoom;
+const { Room, MS, ART_COUNT, GALLERIES } = (globalThis as any).HideRoom;
+// deno-lint-ignore no-explicit-any
+const { Artworks } = globalThis as any;
 
 type Message = {
   t: string;
@@ -375,5 +378,93 @@ Deno.test("default CPU timers still advance phases and resume after restoration"
     if (safetyTimer !== undefined) clearTimeout(safetyTimer);
     room.destroy();
     restored?.destroy();
+  }
+});
+
+Deno.test("the art gallery matches the artwork files and uses its own timings", async () => {
+  assertEquals(ART_COUNT, Artworks.count, "room.js and artworks.js agree on the number of artworks");
+  for (const art of Artworks.list) {
+    const info = await Deno.stat(new URL(`../escondidas-en-pintura/obras/${art.file}`, import.meta.url));
+    assert(info.isFile && info.size > 10_000, `${art.file} exists`);
+  }
+  const { room, players } = makeRoom();
+  try {
+    assertEquals(room.settings.gallery, "clasico", "Rooms start with the classic paintings");
+    room.handle(players[1], { t: "settings", gallery: "arte" });
+    assertEquals(room.settings.gallery, "clasico", "Only the host changes the gallery");
+    room.handle(players[0], { t: "settings", gallery: "arte" });
+    assertEquals(
+      [room.settings.gallery, room.settings.hideTime, room.settings.seekTime],
+      ["arte", GALLERIES.arte.hideDefault, GALLERIES.arte.seekDefault],
+      "Switching gallery applies its default times",
+    );
+    room.handle(players[0], { t: "settings", hideTime: 90, seekTime: 20 });
+    assertEquals(
+      [room.settings.hideTime, room.settings.seekTime],
+      [GALLERIES.arte.hideDefault, GALLERIES.arte.seekDefault],
+      "Classic-only times are rejected for artworks",
+    );
+    room.handle(players[0], { t: "settings", hideTime: 600, seekTime: 120 });
+    assertEquals([room.settings.hideTime, room.settings.seekTime], [600, 120], "Longer times are accepted");
+    for (const bad of ["__proto__", ["arte"], "toString"]) {
+      room.handle(players[0], { t: "settings", gallery: bad });
+      assertEquals(room.settings.gallery, "arte", `Invalid gallery ${JSON.stringify(bad)} is ignored`);
+    }
+    const seen = new Set();
+    for (let round = 0; round < ART_COUNT; round++) {
+      room.round = 0;
+      room.nextRound();
+      assertEquals(room.phaseMsg.gallery, "arte", "Phase messages name the gallery");
+      assert(room.painting >= 0 && room.painting < ART_COUNT, "Artwork index is in range");
+      seen.add(room.painting);
+    }
+    assertEquals(seen.size, ART_COUNT, "A full deck shows every artwork once");
+  } finally {
+    room.destroy();
+  }
+});
+
+Deno.test("unlimited hiding waits for everyone until the host gives the last 30 seconds", () => {
+  const { room, messages, players } = makeRoom({ settings: { gallery: "arte", hideTime: 0, rounds: 1 } });
+  try {
+    room.handle(players[0], { t: "start" });
+    advance(room);
+    assertEquals(room.phase, "hide", "Hiding starts");
+    assertEquals([room.deadline, room.transition], [0, null], "Unlimited hiding has no deadline");
+    assertEquals(room.phaseMsg.duration, null, "Clients receive no duration");
+    assertEquals(room.tick(Date.now() + 3_600_000), false, "Even an hour later nothing advances by itself");
+    room.handle(players[1], { t: "hurry" });
+    assertEquals(room.deadline, 0, "Only the host can hurry");
+    room.handle(players[0], { t: "submit", fig: figure });
+    room.handle(players[0], { t: "hurry" });
+    assertEquals(room.transition, "endHide", "Hurry schedules the end of hiding");
+    const last = messages[1].at(-1)!;
+    assertEquals([last.phase, last.duration, last.hurry], ["hide", MS.hurry, true], "Everyone hears about the last 30 seconds");
+    const deadline = room.deadline;
+    room.handle(players[0], { t: "hurry" });
+    assertEquals(room.deadline, deadline, "A second hurry does not move the deadline");
+    const restored = Room.restore(JSON.parse(JSON.stringify(room.snapshot())), { externalTimers: true });
+    assertEquals(restored.deadline, deadline, "The hurried deadline survives a restart");
+    restored.destroy();
+    advance(room);
+    assertEquals(room.phase, "check", "The hurried deadline ends hiding");
+  } finally {
+    room.destroy();
+  }
+});
+
+Deno.test("rooms saved before galleries restore as classic", () => {
+  const { room } = makeRoom();
+  try {
+    const old = room.snapshot();
+    delete old.settings.gallery;
+    delete old.gallery;
+    const restored = Room.restore(old, { externalTimers: true });
+    assertEquals(restored.settings.gallery, "clasico", "Missing gallery means classic");
+    restored.nextRound();
+    assertEquals(restored.phaseMsg.gallery, "clasico", "Rounds use classic paintings");
+    restored.destroy();
+  } finally {
+    room.destroy();
   }
 });
