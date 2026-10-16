@@ -1,0 +1,6 @@
+# Archivos locales que no van al repositorio
+.claude/
+.local-wip/
+*.mp4
+*.mov
+.DS_Store

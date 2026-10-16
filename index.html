@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#2b2350">
+  <title>Games 101</title>
+  <meta name="description" content="Juegos para jugar en el navegador, solos o con amigos.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@700;800;900&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='10' width='56' height='44' rx='12' fill='%23ffe03a' stroke='%231b1530' stroke-width='5'/%3E%3Ccircle cx='22' cy='32' r='6' fill='%231b1530'/%3E%3Ccircle cx='44' cy='27' r='4' fill='%23ff5a6a'/%3E%3Ccircle cx='44' cy='38' r='4' fill='%234aa8ff'/%3E%3C/svg%3E">
+  <style>
+    /* Estantería de cartuchos: cada juego es una tarjeta gruesa con su portada; la portada lleva la identidad del juego */
+    :root {
+      --ink: #1b1530;
+      --ink-soft: #4a4370;
+      --night: #2b2350;
+      --night-2: #3b3170;
+      --paper: #fffaf1;
+      --yellow: #ffe03a;
+      --yellow-d: #f2b705;
+      --green: #4fe06a;
+      --green-d: #22b049;
+      --display: 'Lilita One', 'Arial Rounded MT Bold', 'Trebuchet MS', system-ui, sans-serif;
+      --body: 'Nunito', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; }
+    body {
+      font-family: var(--body);
+      font-weight: 800;
+      color: var(--paper);
+      background:
+        radial-gradient(circle at 20% 0%, #4b3d93 0, transparent 55%),
+        radial-gradient(circle at 100% 100%, #45307a 0, transparent 50%),
+        var(--night);
+      background-attachment: fixed;
+    }
+    .wrap {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding-block: max(32px, env(safe-area-inset-top, 0px)) 48px;
+      padding-left: max(16px, env(safe-area-inset-left, 0px));
+      padding-right: max(16px, env(safe-area-inset-right, 0px));
+    }
+    header { text-align: center; margin-bottom: 36px; }
+    .logo {
+      margin: 0;
+      font-family: var(--display);
+      font-weight: 400;
+      font-size: clamp(54px, 13vw, 104px);
+      line-height: .95;
+      letter-spacing: 1px;
+      color: var(--yellow);
+      -webkit-text-stroke: 10px var(--ink);
+      paint-order: stroke fill;
+      transform: rotate(-2deg);
+      filter: drop-shadow(0 7px 0 var(--ink));
+      text-wrap: balance;
+    }
+    .logo span { color: #fff; }
+    .tagline { margin: 14px auto 0; max-width: 34em; font-size: 18px; color: #e3dcff; text-wrap: balance; }
+
+    .shelf {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
+      gap: 22px;
+    }
+    .card {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      background: var(--paper);
+      color: var(--ink);
+      border: 4px solid var(--ink);
+      border-radius: 22px;
+      box-shadow: 0 9px 0 var(--ink), 0 22px 40px rgba(0, 0, 0, .35);
+      overflow: hidden;
+      transition: transform .15s ease;
+    }
+    .card:hover { transform: translateY(-4px) rotate(-.4deg); }
+    .cover { display: block; aspect-ratio: 16 / 10; max-width: 100%; border-bottom: 4px solid var(--ink); background: #241a14; }
+    .cover svg { display: block; width: 100%; height: 100%; }
+    .body { display: flex; flex-direction: column; gap: 10px; padding: 16px 18px 18px; flex: 1; }
+    .card h2 { margin: 0; font-family: var(--display); font-weight: 400; font-size: 28px; line-height: 1.05; text-wrap: balance; }
+    .card p { margin: 0; font-weight: 700; font-size: 16px; line-height: 1.4; color: var(--ink-soft); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 4px; padding: 0; list-style: none; }
+    .chips li { font-size: 12px; letter-spacing: .4px; text-transform: uppercase; padding: 4px 9px; border: 2px solid var(--ink); border-radius: 999px; background: #efe9fb; }
+    .play {
+      margin-top: auto;
+      align-self: flex-start;
+      display: inline-block;
+      padding: 10px 22px;
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      background: linear-gradient(180deg, var(--green), var(--green-d));
+      box-shadow: 0 5px 0 var(--ink), inset 0 3px 0 rgba(255, 255, 255, .35);
+      color: #fff;
+      font-family: var(--display);
+      font-size: 20px;
+      letter-spacing: .4px;
+      text-decoration: none;
+      text-shadow: 0 2px 0 rgba(0, 0, 0, .35);
+    }
+    .play:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink), inset 0 3px 0 rgba(255, 255, 255, .35); }
+    .play:focus-visible, .card a:focus-visible { outline: 4px solid var(--yellow); outline-offset: 3px; }
+    .card.soon {
+      background: transparent;
+      color: #e3dcff;
+      border: 4px dashed #8f84c9;
+      box-shadow: none;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      min-height: 260px;
+      padding: 24px;
+    }
+    .card.soon:hover { transform: none; }
+    .card.soon h2 { color: #fff; }
+    .card.soon p { color: #c9c0ef; max-width: 22em; }
+    footer { margin-top: 40px; text-align: center; font-size: 14px; color: #b7aee0; font-weight: 700; }
+    @media (prefers-reduced-motion: reduce) { .card, .card:hover { transition: none; transform: none; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1 class="logo">GAMES <span>101</span></h1>
+      <p class="tagline">Juegos para jugar en el navegador, solos o con amigos. Elige uno y a jugar.</p>
+    </header>
+
+    <main class="shelf">
+      <!-- Para añadir un juego: copia una tarjeta, cambia la portada, el texto y el enlace a su carpeta. -->
+      <article class="card">
+        <a class="cover" href="escondidas-en-pintura/" tabindex="-1" aria-hidden="true">
+          <svg viewBox="0 0 320 200" xmlns="http://www.w3.org/2000/svg">
+            <rect width="320" height="200" fill="#7a4a2e"/>
+            <rect x="12" y="12" width="296" height="176" fill="#14d0dc"/>
+            <path d="M12 52 Q60 30 108 50 T204 46 T308 40 V188 H12Z" fill="#0b1667"/>
+            <path d="M12 82 Q64 58 116 80 T214 76 T308 70 V188 H12Z" fill="#f24d6b"/>
+            <path d="M12 112 Q60 92 112 110 T210 104 T308 98 V188 H12Z" fill="#7fdcbc"/>
+            <path d="M12 140 Q62 122 114 138 T214 132 T308 126 V188 H12Z" fill="#f2c9a0"/>
+            <path d="M12 166 Q58 152 110 164 T212 158 T308 154 V188 H12Z" fill="#0b1667"/>
+            <!-- la figura, a medio camuflar: arriba blanca, abajo pintada como el fondo -->
+            <g>
+              <rect x="186" y="44" width="16" height="14" fill="#f3f3f6"/>
+              <rect x="166" y="58" width="56" height="12" fill="#f3f3f6"/>
+              <rect x="182" y="58" width="24" height="22" fill="#f3f3f6"/>
+              <rect x="182" y="80" width="24" height="28" fill="#f24d6b"/>
+            </g>
+            <rect x="12" y="12" width="296" height="176" fill="none" stroke="#5e3519" stroke-width="3"/>
+          </svg>
+        </a>
+        <div class="body">
+          <h2>Escondidas en Pintura</h2>
+          <p>Píntate para camuflarte en el cuadro y encuentra a los demás antes de que se acabe el tiempo.</p>
+          <ul class="chips" aria-label="Características">
+            <li>1–8 jugadores</li>
+            <li>Contra la CPU</li>
+            <li>En línea</li>
+            <li>Con tutorial</li>
+          </ul>
+          <a class="play" href="escondidas-en-pintura/">Jugar</a>
+        </div>
+      </article>
+
+      <article class="card soon">
+        <h2>Próximamente</h2>
+        <p>Aquí aparecerán los siguientes juegos de la colección.</p>
+      </article>
+    </main>
+
+    <footer>Games 101 · hechos para el navegador, sin instalar nada</footer>
+  </div>
+</body>
+</html>

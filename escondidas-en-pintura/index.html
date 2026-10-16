@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#4fb7ff">
+  <title>Escondidas en Pintura</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Lilita+One&family=Nunito:wght@700;800;900&display=swap" rel="stylesheet">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='4' width='56' height='56' rx='10' fill='%237a4a2e'/%3E%3Crect x='10' y='10' width='44' height='44' fill='%2314d0dc'/%3E%3Cpath d='M10 30 Q22 20 32 30 T54 30 V54 H10Z' fill='%23f24d6b'/%3E%3Crect x='27' y='16' width='10' height='9' fill='%23fff'/%3E%3Crect x='17' y='25' width='30' height='8' fill='%23fff'/%3E%3Crect x='27' y='33' width='10' height='14' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Fondo del menú: un cuadro al azar -->
+  <div id="menu-bg" aria-hidden="true"></div>
+
+  <!-- ============ MENÚ ============ -->
+  <section class="screen active" id="scr-menu">
+    <a class="back-link" href="../index.html">← Más juegos</a>
+    <div class="menu">
+      <h1 class="logo" aria-label="Escondidas en Pintura"><span>ESCONDIDAS</span><span>EN PINTURA</span></h1>
+      <p class="tagline">Píntate para camuflarte en el cuadro… ¡y encuentra a los demás antes de que se acabe el tiempo!</p>
+      <div class="card menu-card">
+        <label class="field">
+          <span>Tu nombre</span>
+          <input id="in-name" maxlength="16" autocomplete="nickname" placeholder="Jugador" spellcheck="false">
+        </label>
+        <button class="btn green big" id="btn-cpu">Jugar contra la CPU</button>
+        <button class="btn blue big" id="btn-online">Multijugador en línea</button>
+        <div class="menu-row">
+          <button class="btn yellow" id="btn-tutorial">Tutorial</button>
+          <button class="btn ghost" id="btn-howto">¿Cómo se juega?</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ CONFIGURAR CPU ============ -->
+  <section class="screen" id="scr-cpu">
+    <div class="card panel">
+      <h2>Partida contra la CPU</h2>
+      <div class="opt">
+        <span class="opt-label">Rivales</span>
+        <div class="seg" data-cpu="bots">
+          <button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button>
+        </div>
+      </div>
+      <div class="opt">
+        <span class="opt-label">Dificultad</span>
+        <div class="seg" data-cpu="diff">
+          <button data-v="easy">Fácil</button><button data-v="normal">Normal</button><button data-v="hard">Difícil</button>
+        </div>
+      </div>
+      <div class="opt">
+        <span class="opt-label">Rondas</span>
+        <div class="seg" data-cpu="rounds">
+          <button data-v="1">1</button><button data-v="3">3</button><button data-v="5">5</button>
+        </div>
+      </div>
+      <div class="opt">
+        <span class="opt-label">Tiempo para esconderte</span>
+        <div class="seg" data-cpu="hideTime">
+          <button data-v="60">1:00</button><button data-v="90">1:30</button><button data-v="120">2:00</button><button data-v="180">3:00</button>
+        </div>
+      </div>
+      <div class="row">
+        <button class="btn ghost" data-back>Volver</button>
+        <button class="btn green" id="btn-cpu-start">¡Jugar!</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ EN LÍNEA ============ -->
+  <section class="screen" id="scr-online">
+    <div class="card panel">
+      <h2>Multijugador en línea</h2>
+      <div class="notice-box" id="online-offline" hidden>
+        <strong>El multijugador necesita el servidor.</strong>
+        Abre la carpeta de la colección en una terminal, ejecuta
+        <code>deno task start</code>
+        y entra en <code>http://localhost:8000</code>.
+      </div>
+      <div class="notice-box" id="online-static" hidden>
+        <strong>Esta página no tiene servidor de multijugador.</strong>
+        Pasa cuando el juego se abre desde un alojamiento estático (como GitHub Pages).
+        Puedes jugar contra la CPU, o abrirlo desde la dirección donde está publicado el servidor.
+      </div>
+      <div id="online-forms">
+        <label class="field online-name">
+          <span>Tu nombre</span>
+          <input id="in-name-online" maxlength="16" autocomplete="nickname" placeholder="Jugador" spellcheck="false">
+        </label>
+        <button class="btn green big" id="btn-create">Crear sala</button>
+        <div class="divider"><span>o únete con un código</span></div>
+        <div class="join-row">
+          <input id="in-code" maxlength="4" placeholder="ABCD" autocomplete="off" spellcheck="false" aria-label="Código de sala">
+          <button class="btn blue" id="btn-join">Unirse</button>
+        </div>
+      </div>
+      <p class="err" id="online-err" role="alert"></p>
+      <div class="row">
+        <button class="btn ghost" data-back>Volver</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SALA DE ESPERA ============ -->
+  <section class="screen" id="scr-lobby">
+    <div class="card panel wide">
+      <div class="lobby-head">
+        <div>
+          <span class="mini-label">Código de sala</span>
+          <div class="room-code" id="lobby-code">····</div>
+        </div>
+        <button class="btn yellow small" id="btn-copy">Copiar enlace</button>
+      </div>
+      <div class="players" id="lobby-players"></div>
+      <div class="lobby-settings" id="lobby-settings">
+        <div class="opt">
+          <span class="opt-label">Rondas</span>
+          <div class="seg" data-room="rounds">
+            <button data-v="1">1</button><button data-v="2">2</button><button data-v="3">3</button><button data-v="5">5</button>
+          </div>
+        </div>
+        <div class="opt">
+          <span class="opt-label">Tiempo para esconderse</span>
+          <div class="seg" data-room="hideTime">
+            <button data-v="60">1:00</button><button data-v="90">1:30</button><button data-v="120">2:00</button><button data-v="180">3:00</button>
+          </div>
+        </div>
+        <div class="opt">
+          <span class="opt-label">Tiempo para buscar</span>
+          <div class="seg" data-room="seekTime">
+            <button data-v="20">0:20</button><button data-v="30">0:30</button><button data-v="45">0:45</button><button data-v="60">1:00</button>
+          </div>
+        </div>
+      </div>
+      <p class="hint" id="lobby-hint"></p>
+      <div class="row">
+        <button class="btn ghost" id="btn-lobby-leave">Salir</button>
+        <button class="btn green" id="btn-lobby-start">¡Empezar!</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ PARTIDA ============ -->
+  <section class="screen" id="scr-game">
+    <header class="hud">
+      <div class="hud-side">
+        <div class="pill dark" id="hud-round">Ronda 1/3</div>
+        <div class="pill light" id="hud-paint">Ondas</div>
+      </div>
+      <div class="hud-center">
+        <div class="timer" id="hud-timer">0:00</div>
+        <div class="pill blue" id="hud-sub">LISTOS 0/2</div>
+      </div>
+      <div class="hud-side right">
+        <button class="icon-btn" id="btn-mute" title="Sonido" aria-label="Activar o silenciar sonido">
+          <svg viewBox="0 0 24 24" class="ic-sound"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          <svg viewBox="0 0 24 24" class="ic-mute"><path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor"/><path d="M16.5 9.5l5 5m0-5l-5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="icon-btn" id="btn-exit" title="Salir de la partida" aria-label="Salir de la partida">
+          <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="stage" id="stage">
+      <div class="frame-wrap" id="frame-wrap">
+        <div class="frame" id="frame">
+          <canvas id="view"></canvas>
+
+          <div class="overlay" id="ov-countdown" hidden>
+            <div class="ov-title">¡PREPÁRENSE!</div>
+            <div class="count" id="count-num">3</div>
+            <div class="ov-sub" id="count-paint"></div>
+          </div>
+
+          <div class="overlay dim" id="ov-check" hidden>
+            <div class="check-card card">
+              <div class="ov-title small">COMPROBANDO TU MEZCLA</div>
+              <div class="meter"><div class="meter-fill" id="check-fill"></div></div>
+              <div class="check-pct" id="check-pct">0%</div>
+              <div class="check-rate" id="check-rate"></div>
+            </div>
+          </div>
+
+          <button class="btn yellow small peek-back" id="btn-unpeek" hidden>Ver resultados</button>
+
+          <div class="banner" id="banner" hidden></div>
+          <div class="spectate" id="spectate" hidden>Entraste a mitad de ronda: jugarás en la siguiente 👀</div>
+        </div>
+
+        <div class="side-tools" id="side-tools">
+          <button class="stool" data-act="pick" title="Elegir color del cuadro (I)">
+            <svg viewBox="0 0 24 24"><path d="M14.5 4.5l5 5M17 2.8a2.4 2.4 0 0 1 3.4 3.4l-2.6 2.6-3.4-3.4L17 2.8zM14.4 5.4l-9 9L4 20l5.6-1.4 9-9" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/></svg>
+            <span>Elegir color</span>
+          </button>
+          <button class="stool" data-act="undo" title="Deshacer (Ctrl+Z)">
+            <svg viewBox="0 0 24 24"><path d="M9 7H4V2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M4.5 7.5A8 8 0 1 1 6 18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span>Deshacer</span>
+          </button>
+          <button class="stool" data-act="redo" title="Rehacer (Ctrl+Shift+Z)">
+            <svg viewBox="0 0 24 24"><path d="M15 7h5V2" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/><path d="M19.5 7.5A8 8 0 1 0 18 18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span>Rehacer</span>
+          </button>
+          <button class="stool" data-act="zoomin" title="Acercar (+)">
+            <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M15 15l5.5 5.5M7 10h6M10 7v6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span>Acercar</span>
+          </button>
+          <button class="stool" data-act="zoomout" title="Alejar (−)">
+            <svg viewBox="0 0 24 24"><circle cx="10" cy="10" r="6.5" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M15 15l5.5 5.5M7 10h6" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span>Alejar</span>
+          </button>
+          <button class="stool" data-act="hand" title="Mover la vista (mantén Espacio)">
+            <svg viewBox="0 0 24 24"><path d="M8 12V5.5a1.5 1.5 0 0 1 3 0V11m0-6.5a1.5 1.5 0 0 1 3 0V11m0-5a1.5 1.5 0 0 1 3 0v6m0-3.5a1.5 1.5 0 0 1 3 0V15a6.5 6.5 0 0 1-6.5 6.5h-1A6.5 6.5 0 0 1 7 19l-3.2-4.6a1.6 1.6 0 0 1 2.6-1.9L8 14.5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>Mover vista</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- resultados: ocupan toda la zona del cuadro para que quepan bien también en pantallas pequeñas -->
+      <div class="overlay dim" id="ov-results" hidden>
+        <div class="results card">
+          <div class="results-head">
+            <svg viewBox="0 0 24 24" class="clock"><circle cx="12" cy="13" r="8" fill="#ff5a5f" stroke="#1b1530" stroke-width="2"/><circle cx="12" cy="13" r="5.5" fill="#fff"/><path d="M12 10v3.5l2 1.5" stroke="#1b1530" stroke-width="1.8" fill="none" stroke-linecap="round"/><path d="M4 6l3-2.5M20 6l-3-2.5" stroke="#1b1530" stroke-width="2.4" stroke-linecap="round"/></svg>
+            <span>Temporizadores</span>
+          </div>
+          <div class="tiles" id="res-tiles"></div>
+          <div class="results-foot">
+            <button class="btn ghost small" id="btn-peek">Ver el cuadro</button>
+            <div class="next-bar"><div class="next-fill" id="next-fill"></div><span id="next-label">Siguiente ronda…</span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer class="controls">
+      <div class="status" id="status"></div>
+      <div class="status-hint" id="status-hint"></div>
+      <div class="toolbar" id="toolbar">
+        <button class="tool t-blue" id="tb-poses" title="Poses (P)">
+          <svg viewBox="0 0 24 24"><rect x="9" y="2.5" width="6" height="5" rx="1" fill="currentColor"/><rect x="3" y="8.5" width="18" height="4" rx="1" fill="currentColor"/><rect x="8.5" y="8.5" width="7" height="7" fill="currentColor"/><rect x="8.5" y="15" width="3.2" height="6.5" rx="1" fill="currentColor"/><rect x="12.3" y="15" width="3.2" height="6.5" rx="1" fill="currentColor"/></svg>
+          <span>Poses</span>
+        </button>
+        <button class="tool t-purple" id="tb-lock" title="Bloquear / desbloquear (L)">
+          <svg viewBox="0 0 24 24" class="ic-locked"><rect x="4.5" y="10.5" width="15" height="11" rx="2.5" fill="currentColor"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>
+          <svg viewBox="0 0 24 24" class="ic-unlocked"><rect x="4.5" y="10.5" width="15" height="11" rx="2.5" fill="currentColor"/><path d="M8 10.5V7.5a4 4 0 0 1 7.6-1.8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>
+          <span id="tb-lock-label">Bloquear</span>
+        </button>
+        <button class="tool t-green" id="tb-brush" title="Pincel y color (B)">
+          <span class="swatch" id="tb-swatch"></span>
+          <span>Pintar</span>
+        </button>
+        <button class="tool t-yellow" id="tb-ready" title="¡Listo!">
+          <svg viewBox="0 0 24 24"><path d="M4.5 12.5l5 5L19.5 7" fill="none" stroke="currentColor" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span id="tb-ready-label">¡Listo!</span>
+        </button>
+      </div>
+
+      <div class="popover card" id="pop-poses" hidden>
+        <div class="pop-title">Elige una pose</div>
+        <div class="pose-grid" id="pose-grid"></div>
+      </div>
+
+      <div class="popover card" id="pop-brush" hidden>
+        <div class="pop-title">Pincel</div>
+        <div class="brush-row">
+          <label class="color-big" title="Elegir cualquier color">
+            <input type="color" id="in-color" value="#f24d6b">
+            <span id="color-big-fill"></span>
+          </label>
+          <div class="brush-col">
+            <div class="sizes" id="sizes"></div>
+            <button class="btn ghost small" id="btn-pick2">Elegir color del cuadro</button>
+          </div>
+        </div>
+        <div class="pop-sub">Colores del cuadro</div>
+        <div class="recent" id="palette"></div>
+        <div class="pop-sub">Recientes</div>
+        <div class="recent" id="recent"></div>
+      </div>
+    </footer>
+  </section>
+
+  <!-- ============ FINAL ============ -->
+  <section class="screen" id="scr-final">
+    <div class="card panel">
+      <h2 class="final-title">¡Fin de la partida!</h2>
+      <div class="podium" id="podium"></div>
+      <ol class="standings" id="standings"></ol>
+      <div class="row">
+        <button class="btn ghost" id="btn-final-menu">Menú</button>
+        <button class="btn blue" id="btn-final-lobby" hidden>Volver a la sala</button>
+        <button class="btn green" id="btn-final-again">Jugar otra vez</button>
+      </div>
+      <p class="hint" id="final-hint"></p>
+    </div>
+  </section>
+
+  <!-- ============ CÓMO SE JUEGA ============ -->
+  <div class="modal" id="howto" hidden>
+    <div class="card panel howto">
+      <h2>¿Cómo se juega?</h2>
+      <ol class="steps">
+        <li><b>Escóndete.</b> Tu figura blanca aparece sobre el cuadro. Arrástrala a un buen sitio y elige una <b>pose</b>.</li>
+        <li><b>Bloquéala y píntala.</b> Pulsa <b>Bloquear</b> y pinta encima con los colores del cuadro (usa <b>Elegir color</b>) hasta que se confunda con el fondo.</li>
+        <li><b>¡A buscar!</b> Cuando todos estén listos, toca donde creas que se esconden los demás. Cada fallo te resta <b>2 segundos</b>.</li>
+        <li><b>Puntos.</b> Encontrar rápido da más puntos, y que no te encuentren también suma. Gana quien tenga más puntos al final.</li>
+      </ol>
+      <div class="keys">
+        <div><kbd>Rueda</kbd> / pellizco: zoom</div>
+        <div><kbd>Espacio</kbd> + arrastrar, clic derecho o dos dedos: mover la vista</div>
+        <div><kbd>Ctrl</kbd>+<kbd>Z</kbd>: deshacer · <kbd>1</kbd>–<kbd>5</kbd> o <kbd>[</kbd> <kbd>]</kbd>: tamaño del pincel</div>
+        <div><kbd>I</kbd> elegir color · <kbd>L</kbd> bloquear · <kbd>P</kbd> poses · flechas: mover figura</div>
+      </div>
+      <div class="row">
+        <button class="btn yellow" id="btn-howto-tutorial">Tutorial interactivo</button>
+        <button class="btn green" id="btn-howto-close">¡Entendido!</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ BIENVENIDA (primera vez) ============ -->
+  <div class="modal" id="welcome" hidden>
+    <div class="card panel small-panel">
+      <div class="avatar big guide-avatar"></div>
+      <h2>¿Es tu primera vez?</h2>
+      <p class="welcome-text" id="welcome-text">Pincelín te enseña a jugar en un minuto: a esconderte pintando y a encontrar a los demás.</p>
+      <div class="row">
+        <button class="btn ghost" id="btn-welcome-no">Ahora no</button>
+        <button class="btn green" id="btn-welcome-yes">¡Enséñame!</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ TUTORIAL: tarjeta de Pincelín y anillo que señala ============ -->
+  <div class="coach-backdrop" id="coach-backdrop" hidden></div>
+  <div class="coach-ring" id="coach-ring" hidden></div>
+  <div class="coach card" id="coach" role="dialog" aria-live="polite" aria-labelledby="coach-title" hidden>
+    <div class="coach-progress"><i id="coach-progress-fill"></i></div>
+    <div class="coach-head">
+      <div class="avatar guide-avatar" title="Pincelín"></div>
+      <div class="coach-title" id="coach-title"></div>
+    </div>
+    <p class="coach-text" id="coach-text"></p>
+    <div class="coach-meter" id="coach-meter" hidden>
+      <span>Mezcla</span>
+      <div class="meter"><div class="meter-fill" id="coach-meter-fill"></div></div>
+      <b id="coach-meter-pct">0%</b>
+    </div>
+    <div class="coach-actions" id="coach-actions"></div>
+  </div>
+
+  <div class="modal" id="confirm" hidden>
+    <div class="card panel small-panel">
+      <h2 id="confirm-text">¿Salir de la partida?</h2>
+      <div class="row">
+        <button class="btn ghost" id="btn-confirm-no">Seguir jugando</button>
+        <button class="btn red" id="btn-confirm-yes">Salir</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="room.js"></script>
+  <script src="paintings.js"></script>
+  <script src="figure.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>

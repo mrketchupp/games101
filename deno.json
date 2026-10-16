@@ -1,0 +1,12 @@
+{
+  "tasks": {
+    "start": "deno run --allow-net --allow-read --allow-env server.ts",
+    "dev": "deno run --watch --allow-net --allow-read --allow-env server.ts",
+    "check": "deno check server.ts && deno lint"
+  },
+  "lint": {
+    "rules": {
+      "exclude": ["no-window", "no-window-prefix"]
+    }
+  }
+}
