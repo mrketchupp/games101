@@ -57,6 +57,9 @@
       this.phase = 'lobby';
       this.round = 0;
       this.timer = null;
+      this.externalTimers = !!opts.externalTimers;
+      this.deadline = 0;
+      this.transition = null;
       this.phaseEndsAt = 0;
       this.phaseMsg = { t: 'phase', phase: 'lobby', round: 0, rounds: this.settings.rounds };
       this.deck = [];
@@ -85,6 +88,61 @@
 
     clearTimer() { if (this.timer) { clearTimeout(this.timer); this.timer = null; } }
     destroy() { this.destroyed = true; this.clearTimer(); }
+
+    /** Estado persistible: las conexiones y los temporizadores pertenecen al proceso. */
+    snapshot() {
+      const state = {};
+      for (const key of Object.keys(this)) {
+        if (['timer', 'onEmpty', 'destroyed'].includes(key)) continue;
+        state[key] = key === 'players'
+          ? this.players.map((p) => Object.assign({}, p, { conn: null }))
+          : this[key];
+      }
+      return structuredClone(state);
+    }
+
+    static restore(state, opts = {}) {
+      const room = new Room(state.code, opts);
+      const copy = structuredClone(state);
+      for (const key of Object.keys(room)) {
+        if (['timer', 'onEmpty', 'destroyed', 'externalTimers'].includes(key)) continue;
+        if (Object.hasOwn(copy, key)) room[key] = copy[key];
+      }
+      room.players.forEach((p) => { p.conn = null; });
+      room.externalTimers = !!(opts.externalTimers ?? copy.externalTimers);
+      room.phaseEndsAt = room.deadline;
+      room.scheduleTimer();
+      return room;
+    }
+
+    /** El servidor persistente llama tick(); CPU y servidor local usan el reloj normal. */
+    scheduleTimer() {
+      this.clearTimer();
+      if (this.destroyed || this.externalTimers || !this.deadline || !this.transition) return;
+      this.timer = setTimeout(() => {
+        this.timer = null;
+        if (!this.tick()) this.scheduleTimer();
+      }, Math.max(0, this.deadline - now()));
+    }
+
+    tick(timestamp = now()) {
+      if (this.destroyed || !this.deadline || !this.transition || timestamp < this.deadline) return false;
+      const transition = this.transition;
+      this.clearTimer();
+      this.deadline = 0;
+      this.phaseEndsAt = 0;
+      this.transition = null;
+      switch (transition) {
+        case 'hide': this.setPhase('hide', this.settings.hideTime * 1000, 'endHide'); break;
+        case 'endHide': this.endHide(); break;
+        case 'finishCheck': this.finishCheck(); break;
+        case 'endSeek': this.endSeek(); break;
+        case 'nextRound': this.nextRound(); break;
+        case 'final': this.final(); break;
+        default: return false;
+      }
+      return true;
+    }
 
     publicPlayers() {
       return this.players.map((p) => ({
@@ -151,9 +209,9 @@
     sync(p) {
       if (this.phase === 'lobby') return;
       const msg = Object.assign({}, this.phaseMsg);
-      if (this.timer) msg.duration = Math.max(0, this.phaseEndsAt - now());
+      if (this.deadline) msg.duration = Math.max(0, this.deadline - now());
       if (this.phase === 'seek') {
-        const left = Math.max(0, this.phaseEndsAt - now() - MS.seekGrace);
+        const left = Math.max(0, this.deadline - now() - MS.seekGrace);
         msg.limit = Math.min(this.limit * 1000, left);
         msg.resumed = true;
       }
@@ -262,11 +320,13 @@
     }
 
     // ---------- flujo de la partida ----------
-    setPhase(phase, ms, next, extra) {
+    setPhase(phase, ms, transition, extra) {
       this.clearTimer();
       this.phase = phase;
-      this.phaseEndsAt = ms != null ? now() + ms : 0;
-      if (ms != null && next) this.timer = setTimeout(() => { this.timer = null; if (!this.destroyed) next(); }, ms);
+      this.deadline = ms != null ? now() + ms : 0;
+      this.phaseEndsAt = this.deadline;
+      this.transition = ms != null ? transition : null;
+      this.scheduleTimer();
       this.phaseMsg = Object.assign({
         t: 'phase', phase, round: this.round, rounds: this.settings.rounds,
         painting: this.painting, seed: this.seed, duration: ms,
@@ -302,9 +362,7 @@
       this.painting = this.deck.pop();
       this.seed = Math.floor(Math.random() * 2147483647);
       this.broadcastRoom();
-      this.setPhase('prepare', MS.prepare, () => {
-        this.setPhase('hide', this.settings.hideTime * 1000, () => this.endHide());
-      });
+      this.setPhase('prepare', MS.prepare, 'hide');
     }
 
     checkAllReady() {
@@ -315,8 +373,8 @@
 
     endHide() {
       if (this.phase !== 'hide') return;
-      this.setPhase('check', MS.checkMax, () => this.finishCheck());
       this.checkStarted = now();
+      this.setPhase('check', MS.checkMax, 'finishCheck');
       for (const p of this.activeConnected()) {
         if (!p.ready || !this.figures[p.id]) this.send(p, { t: 'collect' });
       }
@@ -327,9 +385,9 @@
       if (this.phase !== 'check') return;
       const missing = this.activeConnected().filter((p) => !this.figures[p.id]);
       if (missing.length) return;
-      this.clearTimer();
-      const wait = Math.max(0, MS.checkMin - (now() - this.checkStarted));
-      this.timer = setTimeout(() => { this.timer = null; if (!this.destroyed) this.finishCheck(); }, wait);
+      this.deadline = Math.max(now(), this.checkStarted + MS.checkMin);
+      this.phaseEndsAt = this.deadline;
+      this.scheduleTimer();
     }
 
     finishCheck() {
@@ -339,7 +397,7 @@
       this.limit = seekLimit(this.settings, this.participants.length);
       const figs = {};
       for (const id of this.participants) figs[id] = this.figures[id];
-      this.setPhase('seek', this.limit * 1000 + MS.seekGrace, () => this.endSeek(), {
+      this.setPhase('seek', this.limit * 1000 + MS.seekGrace, 'endSeek', {
         limit: this.limit * 1000, figs, participants: this.participants.slice(),
       });
     }
@@ -376,7 +434,7 @@
       for (const id of this.participants) figs[id] = this.figures[id];
       const last = this.round >= this.settings.rounds;
       this.broadcastRoom();
-      this.setPhase('results', MS.results, () => (last ? this.final() : this.nextRound()), {
+      this.setPhase('results', MS.results, last ? 'final' : 'nextRound', {
         results: entries, finds: this.finds.slice(), limit: L * 1000, figs, last,
       });
     }

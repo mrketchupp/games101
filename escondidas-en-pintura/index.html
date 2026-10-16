@@ -76,15 +76,13 @@
     <div class="card panel">
       <h2>Multijugador en línea</h2>
       <div class="notice-box" id="online-offline" hidden>
-        <strong>El multijugador necesita el servidor.</strong>
-        Abre la carpeta de la colección en una terminal, ejecuta
-        <code>deno task start</code>
-        y entra en <code>http://localhost:8000</code>.
+        <strong>Abre la dirección publicada para jugar en línea.</strong>
+        Desde este archivo puedes jugar contra la CPU y hacer el tutorial.
       </div>
       <div class="notice-box" id="online-static" hidden>
-        <strong>Esta página no tiene servidor de multijugador.</strong>
-        Pasa cuando el juego se abre desde un alojamiento estático (como GitHub Pages).
-        Puedes jugar contra la CPU, o abrirlo desde la dirección donde está publicado el servidor.
+        <strong>Las salas no están disponibles ahora.</strong>
+        Revisa tu conexión o espera unos segundos y vuelve a intentarlo.
+        <button class="btn blue small" id="btn-online-retry">Reintentar</button>
       </div>
       <div id="online-forms">
         <label class="field online-name">
@@ -368,6 +366,7 @@
   <script src="room.js"></script>
   <script src="paintings.js"></script>
   <script src="figure.js"></script>
+  <script src="config.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

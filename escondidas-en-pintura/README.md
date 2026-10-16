@@ -6,6 +6,22 @@ los demás contra reloj.
 
 Forma parte de la colección [Games 101](../README.md).
 
+## Unirse a una partida con amigos
+
+Dirección pública:
+[abrir Escondidas en Pintura](https://mrketchupp.github.io/games101/escondidas-en-pintura/).
+El modo en línea utiliza el servidor de salas publicado en Cloudflare y configurado en `config.js`.
+
+1. El anfitrión abre el juego, escribe su nombre y pulsa **Multijugador en línea → Crear sala**.
+2. Pulsa **Copiar enlace** y lo envía a sus amigos.
+3. Cada invitado abre el enlace, escribe su nombre y pulsa **Unirse**. Si recibe solo el código de
+   4 letras, puede escribirlo en **Multijugador en línea** y pulsar **Unirse**.
+4. Cuando haya **2 a 8 personas** en la sala, el anfitrión pulsa **¡Empezar!**.
+
+No necesitas cuenta, instalar nada ni estar en la misma red. Puedes saltar el tutorial y repetirlo
+cuando quieras con **Tutorial** en el menú. Si aparece un aviso de conexión, espera unos segundos y pulsa
+**Reintentar**; también puedes jugar contra la CPU.
+
 ## Cómo se juega
 
 1. **¡Prepárense!**: aparece un cuadro nuevo (hay 10 estilos generados por código: ondas, campamento, atardecer, Bauhaus…).
@@ -30,20 +46,46 @@ Controles: rueda o pellizco para hacer zoom; Espacio + arrastrar, clic derecho o
 - **Contra la CPU**: de 1 a 3 rivales controlados por el ordenador, con dificultad Fácil, Normal o Difícil.
   No necesita servidor: funciona también en GitHub Pages.
 - **Multijugador en línea**: de 2 a 8 jugadores por sala. Uno crea la sala y comparte el código de 4 letras
-  o el enlace (`?sala=ABCD`). Necesita el servidor de la colección.
+  o el enlace (`?sala=ABCD`). En internet usa el servidor de salas de Cloudflare.
 
 ## Multijugador
 
-Lo sirve el servidor de la colección (`../server.ts`), que monta las salas de este juego en
-`/escondidas-en-pintura/ws`. Desde la carpeta de la colección:
+El despliegue combina **GitHub Pages** para los archivos del juego y **Cloudflare Workers Free**
+con **Durable Objects con SQLite** para las salas. El cliente lee `window.EEP_CONFIG.websocketUrl` desde
+`config.js`, que se carga antes de `game.js`. Debe apuntar al dominio real del Worker, con `wss://` y la
+ruta `/escondidas-en-pintura/ws`. Si el valor está vacío, busca el servidor junto al juego para uso local.
+
+En Cloudflare, cada sala guarda una copia de su estado y una alarma con el plazo de la fase para poder
+restaurar la partida tras una hibernación o un reinicio del proceso. Si desaparece una conexión, ese
+jugador pasa a estar desconectado. Las salas se eliminan tras **2 minutos sin personas conectadas**.
+Si el código ya no existe, crea otra sala y comparte el nuevo enlace.
+
+Desde la carpeta de la colección, los comandos para el backend son:
+
+```bash
+pnpm install
+pnpm dev:multiplayer
+pnpm deploy:multiplayer
+```
+
+El segundo comando inicia el entorno local de Wrangler; el tercero publica las salas en la cuenta de
+Cloudflare autorizada. El cliente se publica mediante [el flujo de GitHub Pages](../.github/workflows/pages.yml),
+que prepara los archivos con `deno task build:pages`. Los pasos de autenticación, configuración y
+publicación están en el [README de la colección](../README.md#publicarlo-en-internet).
+
+Se requiere **Workers Free** para mantener el despliegue gratuito: superar sus cuotas hace fallar las
+operaciones afectadas. En **Workers Paid**, el uso puede generar cargos. Consulta
+[costos y límites](../README.md#costos-y-límites) antes de desplegar; no actives un plan de pago
+automáticamente.
+
+Para jugar y desarrollar solo con el servidor local de Deno (`../server.ts`):
 
 ```bash
 deno task start
 ```
 
-y entra en <http://localhost:8000/escondidas-en-pintura/>. Para publicarlo en internet, mira el
-[README de la colección](../README.md#publicarlo-en-internet). Las salas viven en memoria: si el servidor se
-reinicia, las partidas en curso se pierden.
+y entra en [el juego local](http://localhost:8000/escondidas-en-pintura/). Las salas de este servidor
+local viven en memoria: si Deno se reinicia, esas partidas en curso se pierden.
 
 ## Archivos
 
@@ -54,4 +96,5 @@ reinicia, las partidas en curso se pierden.
 | `paintings.js` | Los 10 cuadros generados por código (con la misma semilla, todos ven el mismo cuadro). |
 | `figure.js` | La figura de bloques y sus 10 poses. |
 | `game.js` | Interfaz, dibujo, zoom, pintura, búsqueda, bots, tutorial y conexión. |
+| `config.js` | Dirección pública del servidor WebSocket; vacía para usar el servidor junto al juego. |
 | `index.html`, `style.css` | Pantallas y estilos. |

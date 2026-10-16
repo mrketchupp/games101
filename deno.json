@@ -2,9 +2,13 @@
   "tasks": {
     "start": "deno run --allow-net --allow-read --allow-env server.ts",
     "dev": "deno run --watch --allow-net --allow-read --allow-env server.ts",
-    "check": "deno check server.ts && deno lint"
+    "check": "deno check server.ts && deno lint",
+    "test": "deno test tests/",
+    "test:multiplayer": "deno run --allow-net scripts/smoke-multiplayer.ts",
+    "build:pages": "deno run --allow-read --allow-write=_site scripts/build-pages.ts"
   },
   "lint": {
+    "exclude": ["node_modules/", ".wrangler/", "_site/"],
     "rules": {
       "exclude": ["no-window", "no-window-prefix"]
     }

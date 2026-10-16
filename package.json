@@ -1,0 +1,14 @@
+{
+  "name": "games101",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "dev:multiplayer": "wrangler dev",
+    "deploy:multiplayer": "wrangler deploy",
+    "check:multiplayer": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.151.0"
+  }
+}

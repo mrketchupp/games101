@@ -363,23 +363,45 @@
     }
   }
 
-  /** El multijugador vive junto al juego: /escondidas-en-pintura/ws en el servidor de la colección. */
-  function wsUrl() {
-    const url = new URL('ws', location.href);
-    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  /** Puede usar un servidor remoto; en local, el multijugador vive junto al juego. */
+  function wsUrl(hello) {
+    const configured = window.EEP_CONFIG && window.EEP_CONFIG.websocketUrl;
+    const url = new URL(typeof configured === 'string' && configured.trim() ? configured.trim() : 'ws', location.href);
+    if (url.protocol === 'https:') url.protocol = 'wss:';
+    if (url.protocol === 'http:') url.protocol = 'ws:';
+    if (url.protocol !== 'ws:' && url.protocol !== 'wss:') throw new Error('Servidor no disponible');
+    url.searchParams.delete('sala');
+    url.searchParams.delete('probe');
+    if (hello && hello.t === 'join') url.searchParams.set('sala', hello.code);
+    else if (!hello) url.searchParams.set('probe', '1');
     return url.href;
   }
 
   let serverCheck = null;
-  /** ¿Hay servidor de multijugador? Responde 426 a una petición normal; un alojamiento estático da 404. */
+  /** Comprueba el mismo canal que usan las salas, también entre dominios. */
   function serverAvailable() {
     if (!serverCheck) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 4000);
-      serverCheck = fetch(new URL('ws', location.href), { signal: ctrl.signal, cache: 'no-store' })
-        .then((r) => r.status === 426)
-        .catch(() => false)
-        .finally(() => clearTimeout(timer));
+      serverCheck = new Promise((resolve) => {
+        let ws;
+        let done = false;
+        const finish = (ok) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          if (ws) {
+            ws.onopen = ws.onmessage = ws.onclose = null;
+            try { ws.close(); } catch { /* ya cerrado */ }
+          }
+          resolve(ok);
+        };
+        const timer = setTimeout(() => finish(false), 8000);
+        try { ws = new WebSocket(wsUrl()); } catch { finish(false); return; }
+        ws.onopen = () => ws.send(JSON.stringify({ t: 'ping' }));
+        ws.onmessage = (ev) => {
+          try { if (JSON.parse(ev.data).t === 'pong') finish(true); } catch { /* mensaje desconocido */ }
+        };
+        ws.onclose = ws.onerror = () => finish(false);
+      }).finally(() => { serverCheck = null; });
     }
     return serverCheck;
   }
@@ -392,45 +414,87 @@
       this.tries = 0;
       this.closed = false;
       this.welcomed = false;
-      this.open();
+      this.ready = false;
+      // El llamador guarda el enlace antes de recibir un posible fallo de conexión.
+      this.retry = setTimeout(() => this.open(), 0);
     }
     open() {
+      if (this.closed) return;
+      this.ready = false;
       let ws;
-      try { ws = new WebSocket(wsUrl()); } catch { this.onState('failed'); return; }
+      try { ws = new WebSocket(wsUrl(this.hello)); } catch { this.fail(this.welcomed ? 'lost' : 'failed'); return; }
       this.ws = ws;
-      ws.onopen = () => {
-        this.tries = 0;
-        ws.send(JSON.stringify(this.hello));
+      let disconnected = false;
+      const disconnect = () => {
+        if (this.ws !== ws || disconnected) return;
+        disconnected = true;
+        this.ready = false;
+        clearTimeout(this.timeout);
+        clearTimeout(this.pongTimeout);
         clearInterval(this.ping);
-        this.ping = setInterval(() => this.send({ t: 'ping' }), 20000);
-        if (this.welcomed) this.onState('open');
+        if (this.closed) return;
+        if (!this.welcomed) { this.fail('failed'); return; }
+        if (this.tries++ < 6) {
+          if (this.tries === 1) this.onState('reconnecting');
+          this.retry = setTimeout(() => this.open(), Math.min(4000, 500 * this.tries));
+        } else {
+          this.fail('lost');
+        }
+      };
+      this.timeout = setTimeout(() => {
+        if (this.ws === ws && !this.ready) {
+          ws.close();
+          disconnect();
+        }
+      }, 8000);
+      ws.onopen = () => {
+        if (this.closed || disconnected || this.ws !== ws) return;
+        ws.send(JSON.stringify(this.hello));
       };
       ws.onmessage = (ev) => {
+        if (this.closed || disconnected || this.ws !== ws) return;
         let m;
         try { m = JSON.parse(ev.data); } catch { return; }
-        if (m.t === 'pong') return;
+        if (!m || typeof m !== 'object') return;
+        if (m.t === 'pong') { clearTimeout(this.pongTimeout); return; }
+        if (m.t === 'error' && !this.ready) {
+          this.fail('rejected', m.msg);
+          return;
+        }
         if (m.t === 'welcome') {
+          const reconnecting = this.welcomed;
           this.welcomed = true;
+          this.ready = true;
+          this.tries = 0;
+          clearTimeout(this.timeout);
           this.hello = { t: 'join', code: m.code, name: this.hello.name, pid: this.hello.pid };
+          clearInterval(this.ping);
+          this.ping = setInterval(() => {
+            this.send({ t: 'ping' });
+            this.pongTimeout = setTimeout(() => { ws.close(); disconnect(); }, 8000);
+          }, 20000);
+          if (this.onMessage) this.onMessage(m);
+          if (reconnecting) this.onState('open');
+          return;
         }
         if (this.onMessage) this.onMessage(m);
       };
-      ws.onclose = () => {
-        clearInterval(this.ping);
-        if (this.closed) return;
-        if (!this.welcomed) { this.onState('failed'); return; }
-        if (this.tries++ < 12) {
-          this.onState('reconnecting');
-          setTimeout(() => { if (!this.closed) this.open(); }, Math.min(4000, 500 * this.tries));
-        } else {
-          this.onState('lost');
-        }
-      };
+      ws.onerror = () => {}; // onclose o el límite de espera resuelven el intento.
+      ws.onclose = disconnect;
     }
-    send(m) { if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(m)); }
+    fail(state, message) {
+      if (this.closed) return;
+      this.close();
+      this.onState(state, message);
+    }
+    send(m) { if (this.ready && this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(m)); }
     close() {
       this.closed = true;
+      this.ready = false;
       this.onMessage = null;
+      clearTimeout(this.retry);
+      clearTimeout(this.timeout);
+      clearTimeout(this.pongTimeout);
       clearInterval(this.ping);
       try { this.ws.close(); } catch { /* ya cerrado */ }
     }
@@ -1686,7 +1750,11 @@
       case 'welcome':
         G.me = m.you;
         G.code = m.code;
-        if (G.mode === 'online') history.replaceState(null, '', '?sala=' + m.code);
+        if (G.mode === 'online') {
+          setBusy(false);
+          showOnlineNotice(null);
+          history.replaceState(null, '', '?sala=' + m.code);
+        }
         break;
       case 'room':
         G.room = m;
@@ -1766,17 +1834,26 @@
   function setBusy(b) {
     $('#btn-create').disabled = b;
     $('#btn-join').disabled = b;
+    $('#btn-online-retry').disabled = b;
+  }
+
+  function showOnlineNotice(kind) {
+    $('#online-offline').hidden = kind !== 'file';
+    $('#online-static').hidden = kind !== 'unavailable';
+    $('#online-forms').hidden = kind === 'file';
   }
 
   function leaveGame() {
     if (G.link) G.link.close();
     G.link = null;
+    setBusy(false);
     G.bots.forEach((b) => b.destroy());
     G.bots = [];
     if (G.localRoom) G.localRoom.destroy();
     G.localRoom = null;
     G.mode = null;
     G.me = null;
+    G.code = null;
     G.room = null;
     G.phase = 'none';
     G.round = 0;
@@ -1808,26 +1885,30 @@
   }
 
   function connectOnline(hello) {
+    if (G.mode === 'online' && G.link && !G.link.ready) return;
     if (G.link) leaveGame();
+    showScreen('scr-online');
+    showOnlineNotice(null);
     $('#online-err').textContent = '';
     setBusy(true);
     G.mode = 'online';
-    G.link = new NetLink(hello, onMessage, (state) => {
-      if (state === 'failed') {
-        setBusy(false);
-        if (!G.me) {
-          $('#online-err').textContent = 'No se pudo conectar con el servidor.';
-          if (G.link) G.link.close();
-          G.link = null;
-          G.mode = null;
-        }
+    const returnOnline = (message, unavailable) => {
+      const code = G.code;
+      leaveGame();
+      if (code) $('#in-code').value = code;
+      showScreen('scr-online');
+      showOnlineNotice(unavailable ? 'unavailable' : null);
+      $('#online-err').textContent = message;
+    };
+    G.link = new NetLink(hello, onMessage, (state, message) => {
+      if (state === 'failed' || state === 'lost') {
+        returnOnline(state === 'lost' ? 'Se perdió la conexión. Puedes volver a unirte o crear otra sala.' : '', true);
+      } else if (state === 'rejected') {
+        returnOnline(message || 'La sala ya no está disponible. Puedes crear otra.', false);
       } else if (state === 'reconnecting') {
         toast('Conexión perdida. Reconectando…', 'bad');
       } else if (state === 'open') {
         toast('¡Reconectado!', 'good');
-      } else if (state === 'lost') {
-        toast('Se perdió la conexión con el servidor.', 'bad');
-        leaveGame();
       }
     });
   }
@@ -2319,11 +2400,6 @@
     renderMenuBackground();
 
     $('#btn-cpu').onclick = () => { Sound.unlock(); showScreen('scr-cpu'); };
-    const showOnlineNotice = (kind) => {
-      $('#online-offline').hidden = kind !== 'file';
-      $('#online-static').hidden = kind !== 'static';
-      $('#online-forms').hidden = !!kind;
-    };
     $('#btn-online').onclick = () => {
       Sound.unlock();
       const offline = location.protocol === 'file:';
@@ -2331,9 +2407,19 @@
       $('#online-err').textContent = '';
       showScreen('scr-online');
       if (offline) return;
+      setBusy(false);
       setTimeout(() => $('#in-code').focus(), 50);
       serverAvailable().then((ok) => {
-        if (!ok && G.screen === 'scr-online' && !G.link) showOnlineNotice('static');
+        if (G.screen === 'scr-online' && !G.link) showOnlineNotice(ok ? null : 'unavailable');
+      });
+    };
+    $('#btn-online-retry').onclick = () => {
+      setBusy(true);
+      serverAvailable().then((ok) => {
+        if (G.screen !== 'scr-online' || G.link) return;
+        setBusy(false);
+        showOnlineNotice(ok ? null : 'unavailable');
+        if (ok) $('#online-err').textContent = '';
       });
     };
     $('#btn-howto').onclick = () => { $('#howto').hidden = false; };
@@ -2343,7 +2429,7 @@
     $('#btn-welcome-yes').onclick = () => { $('#welcome').hidden = true; Sound.unlock(); Tutorial.start(); };
     $('#btn-welcome-no').onclick = () => { $('#welcome').hidden = true; store.set('tutorialSeen', true); };
     $('#howto').addEventListener('click', (e) => { if (e.target.id === 'howto') $('#howto').hidden = true; });
-    $$('[data-back]').forEach((b) => { b.onclick = () => { setBusy(false); showScreen('scr-menu'); }; });
+    $$('[data-back]').forEach((b) => { b.onclick = () => leaveGame(); });
 
     bindSeg('[data-cpu]', (k) => cpuOpts[k], (key, val, seg) => {
       cpuOpts[key] = key === 'diff' ? val : Number(val);

@@ -4,3 +4,9 @@
 *.mp4
 *.mov
 .DS_Store
+node_modules/
+.wrangler/
+_site/
+.dev.vars
+.env
+.env.*
