@@ -1,7 +1,9 @@
 import { DurableObject } from 'cloudflare:workers';
+import '../escondidas-en-pintura/artworks.js';
+import '../escondidas-en-pintura/bot-ai.js';
 import '../escondidas-en-pintura/room.js';
 
-const { Room } = globalThis.HideRoom;
+const { Room, PROTOCOL_VERSION, CATALOG_VERSION, ARTWORK_COUNT } = globalThis.HideRoom;
 const WS_PATH = '/escondidas-en-pintura/ws';
 const INTERNAL_PATH = '/room-socket';
 const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -13,7 +15,7 @@ const CHUNK_SIZE = 64 * 1024;
 const MAX_CHUNKS = 256;
 const PING = JSON.stringify({ t: 'ping' });
 const PONG = JSON.stringify({ t: 'pong' });
-const MUTATIONS = new Set(['settings', 'start', 'lobby', 'submit', 'unsubmit', 'figure', 'found', 'seekDone', 'hurry']);
+const MUTATIONS = new Set(['settings', 'start', 'lobby', 'hurry', 'submit', 'unsubmit', 'figure', 'botFigure', 'found', 'seekDone']);
 
 function isUpgrade(request) {
   return request.headers.get('upgrade')?.toLowerCase() === 'websocket';
@@ -55,7 +57,7 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === '/health' && request.method === 'GET') {
-      return Response.json({ ok: true, service: 'games101-multiplayer', transport: 'websocket' }, {
+      return Response.json({ ok: true, service: 'games101-multiplayer', transport: 'websocket', protocol: PROTOCOL_VERSION, artworks: ARTWORK_COUNT, cpu: true }, {
         headers: { 'cache-control': 'no-store', 'access-control-allow-origin': '*' },
       });
     }
@@ -108,7 +110,8 @@ export class PaintRoom extends DurableObject {
       await this.load();
       for (const socket of ctx.getWebSockets()) {
         const attachment = socket.deserializeAttachment();
-        if (!attachment || typeof attachment.socketId !== 'string' || socket.readyState !== 1) {
+        if (!attachment || typeof attachment.socketId !== 'string' || socket.readyState !== 1 ||
+            (attachment.playerId && (attachment.protocol !== PROTOCOL_VERSION || attachment.catalog !== CATALOG_VERSION))) {
           closeSocket(socket, 1008, 'Sesión no válida');
           continue;
         }
@@ -128,7 +131,7 @@ export class PaintRoom extends DurableObject {
         // A worker restart may retain the snapshot after losing a connection.
         // Reconcile it before delivering any new event to the room.
         for (const player of [...this.room.players]) {
-          if (player.connected && !player.conn) {
+          if (player.connected && !player.managedBot && !player.conn) {
             this.room.disconnect(player, null);
             dirty = true;
           }
@@ -228,6 +231,13 @@ export class PaintRoom extends DurableObject {
           await this.flush(dirty);
           return;
         }
+        if (msg.protocol !== PROTOCOL_VERSION || msg.catalog !== CATALOG_VERSION) {
+          socketError(socket, 'Esta sala usa otra versión del juego. Actualiza la página antes de volver a entrar.');
+          this.detach(socket);
+          closeSocket(socket, 1008, 'Actualiza el juego');
+          await this.flush(dirty);
+          return;
+        }
         const pid = typeof msg.pid === 'string' ? msg.pid.slice(0, 40) : undefined;
         const previous = pid && this.room.players.find((player) => player.pid === pid);
         const previousSocketId = previous?.socketId;
@@ -247,6 +257,7 @@ export class PaintRoom extends DurableObject {
         socket.serializeAttachment({
           code: session.code, canCreate: false, socketId: session.socketId,
           pid: session.pid, playerId: session.playerId, helloDeadline: null,
+          protocol: PROTOCOL_VERSION, catalog: CATALOG_VERSION,
         });
         // Remove the old socket before closing it. Its delayed close event must
         // never mark the newly reconnected player as disconnected.
@@ -333,8 +344,8 @@ export class PaintRoom extends DurableObject {
       await this.ctx.storage.deleteAlarm();
       return false;
     }
-    // The deadline comes from the saved room, so waking from hibernation never
-    // grants a fresh full timer to a phase that had already started.
+    // Phase deadlines and CPU actions come from the saved room: waking from
+    // hibernation preserves both, without granting any fresh phase timer.
     if (this.room?.tick(now)) dirty = true;
     return dirty;
   }
@@ -398,7 +409,8 @@ export class PaintRoom extends DurableObject {
 
   async scheduleAlarm() {
     const deadlines = [];
-    if (this.room?.deadline) deadlines.push(this.room.deadline);
+    const roomWakeAt = this.room?.nextWakeAt();
+    if (roomWakeAt) deadlines.push(roomWakeAt);
     if (this.room && this.emptySince !== null) deadlines.push(this.emptySince + EMPTY_ROOM_TTL);
     for (const session of this.sessions.values()) {
       if (!session.playerId && session.helloDeadline) deadlines.push(session.helloDeadline);

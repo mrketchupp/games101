@@ -616,7 +616,29 @@
     ['Rayos de sol', rayos],
   ];
 
-  function render(idx, seed, canvas) {
+  // Tramas que atraviesan incluso los fondos planos. La separación es menor que
+  // el cuerpo del muñeco: un relleno de un solo color deja de bastar.
+  function addDetail(ctx, difficulty, seed) {
+    if (!difficulty) return;
+    const image = ctx.getImageData(0, 0, W, H);
+    const data = image.data;
+    const spacing = difficulty === 2 ? 27 : 48;
+    const shift = (seed >>> 0) % 113;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const wave = 5 * Math.sin((x + shift) / 43) + 4 * Math.sin(y / 61);
+        const band = ((x + y * 0.7 + wave + shift) % spacing) / spacing;
+        if (band > 0.38) continue;
+        const k = (y * W + x) * 4;
+        const light = data[k] * 0.2126 + data[k + 1] * 0.7152 + data[k + 2] * 0.0722;
+        const amount = (difficulty === 2 ? 95 : 72) * (light > 128 ? -1 : 1);
+        for (let c = 0; c < 3; c++) data[k + c] = Math.max(0, Math.min(255, data[k + c] + amount));
+      }
+    }
+    ctx.putImageData(image, 0, 0);
+  }
+
+  function render(idx, seed, canvas, difficulty = 0) {
     canvas.width = W;
     canvas.height = H;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -625,6 +647,7 @@
     ctx.save();
     LIST[i][1](ctx, r);
     ctx.restore();
+    addDetail(ctx, difficulty === 2 ? 2 : difficulty === 1 ? 1 : 0, seed);
     return canvas;
   }
 

@@ -6,7 +6,8 @@
   "scripts": {
     "dev:multiplayer": "wrangler dev",
     "deploy:multiplayer": "wrangler deploy",
-    "check:multiplayer": "wrangler deploy --dry-run"
+    "check:multiplayer": "wrangler deploy --dry-run",
+    "test:hibernation": "node scripts/smoke-worker-hibernation.mjs"
   },
   "devDependencies": {
     "wrangler": "^4.151.0"

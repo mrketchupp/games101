@@ -1,4 +1,8 @@
 // Dos conexiones independientes ejercitan el protocolo público, incluyendo una ronda completa.
+import '../escondidas-en-pintura/artworks.js';
+import '../escondidas-en-pintura/bot-ai.js';
+import '../escondidas-en-pintura/room.js';
+const { PROTOCOL_VERSION, CATALOG_VERSION } = (globalThis as unknown as { HideRoom: { PROTOCOL_VERSION: number; CATALOG_VERSION: string } }).HideRoom;
 const endpoint = Deno.args[0] || 'ws://127.0.0.1:8787/escondidas-en-pintura/ws';
 const sockets: WebSocket[] = [];
 function assert(value: unknown, message: string): asserts value {
@@ -26,6 +30,8 @@ function client(url: string) {
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       assert(ws.readyState === WebSocket.OPEN, 'El WebSocket no se abrió');
+      const value = message as Record<string, unknown>;
+      if (value.t === 'create' || value.t === 'join') message = { ...value, protocol: PROTOCOL_VERSION, catalog: CATALOG_VERSION };
       ws.send(JSON.stringify(message));
     },
   };
@@ -42,12 +48,14 @@ try {
   const host = client(endpoint);
   await host.send({ t: 'create', name: 'Prueba A', pid: crypto.randomUUID() });
   const welcome = await host.wait((m) => m.t === 'welcome');
+  assert(welcome.protocol === PROTOCOL_VERSION && welcome.catalog === CATALOG_VERSION, 'El servidor debe usar la misma versión y catálogo que el cliente');
   const joinUrl = new URL(endpoint);
   joinUrl.searchParams.set('sala', String(welcome.code));
   const guestPid = crypto.randomUUID();
   const guest = client(joinUrl.href);
   await guest.send({ t: 'join', code: welcome.code, name: 'Prueba B', pid: guestPid });
   const guestWelcome = await guest.wait((m) => m.t === 'welcome');
+  assert(guestWelcome.protocol === PROTOCOL_VERSION && guestWelcome.catalog === CATALOG_VERSION, 'Los dos jugadores deben compartir protocolo y catálogo');
   assert(welcome.code === guestWelcome.code && welcome.you !== guestWelcome.you, 'Deben ser dos humanos distintos en la misma sala');
 
   // Una sesión vieja no debe expulsar al jugador que acaba de reconectarse.
@@ -81,6 +89,10 @@ try {
   const badUrl = new URL(endpoint);
   badUrl.searchParams.set('sala', 'IIII'); // El generador nunca usa I.
   const missing = client(badUrl.href);
+  // Deno valida el código al recibir join; el Worker también puede rechazarlo al conectar.
+  missing.ws.addEventListener('open', () => {
+    missing.ws.send(JSON.stringify({ t: 'join', code: 'IIII', name: 'Prueba sin sala', protocol: PROTOCOL_VERSION, catalog: CATALOG_VERSION }));
+  }, { once: true });
   await missing.wait((m) => m.t === 'error');
   console.log('PASS: ping, crear/unir, reconectar, dos figuras, búsqueda, puntos, final y sala inexistente.');
 } finally {

@@ -7,7 +7,12 @@ y la portada (`index.html`) los reúne todos.
 
 | Juego | De qué va | Jugadores |
 | --- | --- | --- |
-| [Escondidas en Pintura](escondidas-en-pintura/) | Píntate para camuflarte en un cuadro (o en una obra de arte famosa) y encuentra a los demás contra reloj. Con tutorial. | 1 contra la CPU, o de 2 a 8 en línea |
+| [Escondidas en Pintura](escondidas-en-pintura/) | Píntate para camuflarte en un cuadro y encuentra a los demás contra reloj. Con tutorial. | 1 contra la CPU, o de 2 a 8 participantes en línea, incluyendo CPU |
+
+Escondidas en Pintura permite elegir patrones con tres niveles de detalle o jugar sobre
+**obras del mundo humano**, una colección de 35 reproducciones de dominio público del Metropolitan
+Museum of Art y Wikimedia Commons. La dificultad del fondo se configura por separado de la de los rivales CPU.
+Los rivales tienen cuatro niveles, de Fácil a Experto, y también pueden añadirse a las salas en línea.
 
 ## Jugar en tu ordenador
 
@@ -30,10 +35,11 @@ Las salas se conectan al [servidor de Cloudflare](https://games101-multiplayer.e
 2. Pulsa **Copiar enlace** y lo comparte con los demás.
 3. Cada invitado abre ese enlace, escribe su nombre y pulsa **Unirse**. También puede abrir el juego,
    entrar en **Multijugador en línea** y escribir el código de 4 letras.
-4. Con **2 a 8 personas** en la sala, el anfitrión pulsa **¡Empezar!**.
+4. El anfitrión puede añadir **CPU** y elegir su dificultad. Con **2 a 8 participantes** en total,
+   incluyendo al menos una persona, pulsa **¡Empezar!**.
 
 Todos pueden jugar desde el navegador, sin instalar nada ni crear cuentas. El tutorial se puede saltar y
-repetir desde **Tutorial** en el menú. Para jugar contra la CPU no hace falta el servidor de salas.
+repetir desde **¿Cómo se juega? → Tutorial interactivo** en el menú. Para jugar contra la CPU no hace falta el servidor de salas.
 
 ## Publicarlo en internet
 
@@ -64,11 +70,6 @@ pnpm deploy:multiplayer
 Wrangler muestra la dirección HTTPS real del Worker cuando termina el despliegue. El servicio de este
 juego utiliza la ruta `/escondidas-en-pintura/ws`.
 
-El Worker incluye las reglas de `escondidas-en-pintura/room.js`, pero GitHub Actions solo publica el cliente. **Cada vez
-que cambien las reglas hay que volver a ejecutar `pnpm deploy:multiplayer`.** Mientras tanto, el juego sigue funcionando
-con las reglas anteriores y oculta las opciones que ese servidor aún no conoce (por ejemplo, la galería de obras de arte
-en las salas).
-
 ### 2. Conectar el juego al servidor
 
 En `escondidas-en-pintura/config.js`, cambia `websocketUrl` por la dirección del Worker con protocolo
@@ -84,15 +85,40 @@ El valor vacío utiliza el servidor local junto al juego. En GitHub Pages debe c
 remota para que funcionen las salas. Esta configuración es pública y no debe contener contraseñas ni
 tokens. El juego añade el código de sala a la conexión automáticamente.
 
-`deno task test` comprueba las reglas y la persistencia. `deno task test:multiplayer` prueba el Worker
-local con dos jugadores independientes, una reconexión y una ronda completa; también acepta como
-argumento la URL WebSocket del servidor publicado.
+`deno task test` comprueba las reglas, las CPU, la persistencia y las imágenes incluidas.
+Con el servidor local en marcha, los comandos siguientes prueban conexiones reales; también
+aceptan la URL WebSocket del servidor publicado como argumento:
+
+```bash
+deno task test:multiplayer ws://127.0.0.1:8787/escondidas-en-pintura/ws
+deno task test:bots ws://127.0.0.1:8787/escondidas-en-pintura/ws
+deno task test:protocol ws://127.0.0.1:8787/escondidas-en-pintura/ws
+```
+
+El primero completa una ronda con dos personas y reconexión; el segundo comprueba CPU en una sala
+individual y en otra con cambio de anfitrión; el tercero verifica versiones y rechaza conexiones
+incompatibles. Las pruebas crean salas temporales y cierran sus conexiones al terminar.
+`pnpm test:hibernation` inicia un Worker local aislado, fuerza la hibernación de una sala durante
+la pintura y la búsqueda, y comprueba que sus alarmas conservan las conexiones, las decisiones de
+las CPU y los puntos. No necesita iniciar otro servidor ni acceder a la cuenta de Cloudflare.
 
 ### 3. Publicar GitHub Pages
 
 En el repositorio de GitHub, abre **Settings → Pages → Build and deployment** y elige **GitHub Actions**
 como origen. El flujo [`.github/workflows/pages.yml`](.github/workflows/pages.yml) comprueba el proyecto,
 prepara los archivos y los publica al subir cambios a `main`; también se puede ejecutar desde **Actions**.
+Antes de publicar el cliente, comprueba una ronda contra el servidor público y su versión de protocolo
+y catálogo. **Este flujo no despliega el Worker**: publica primero las salas y después GitHub Pages.
+
+Para esta actualización, `/health` debe indicar `protocol: 2`, `artworks: 35` y `cpu: true`.
+Después de desplegar el Worker, ejecuta las tres pruebas anteriores con su dirección pública `wss://`
+y luego publica el cliente. En un entorno sin sesión de Wrangler, configura de forma segura
+`CLOUDFLARE_API_TOKEN` para la cuenta de destino; no lo guardes en el repositorio ni en `config.js`.
+
+Al actualizar, los jugadores deben recargar la página para usar el mismo protocolo y catálogo que el
+servidor. Las salas de obras iniciadas con la galería anterior requieren crear una sala nueva, porque
+sus índices y recortes no representan la misma colección. Las salas de patrones anteriores conservan
+su fondo original. Los clientes incompatibles reciben un aviso antes de entrar en una sala.
 
 Para preparar los mismos archivos en local:
 

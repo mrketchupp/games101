@@ -28,12 +28,12 @@ jobs:
       - run: deno task check
       - run: deno task test
       - run: deno task build:pages
+      - name: Verify compatible public multiplayer service
+        timeout-minutes: 2
+        run: deno task test:multiplayer wss://games101-multiplayer.electro-k.workers.dev/escondidas-en-pintura/ws 12000
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site
       - uses: actions/deploy-pages@v4
         id: deployment
-      - name: Verify public multiplayer service
-        timeout-minutes: 2
-        run: deno task test:multiplayer wss://games101-multiplayer.electro-k.workers.dev/escondidas-en-pintura/ws 12000

@@ -2,7 +2,8 @@
 (function () {
   'use strict';
 
-  const { Room, MISS_PENALTY } = window.HideRoom;
+  const { Room, MISS_PENALTY, collectionOf } = window.HideRoom;
+  const Bots = window.HideBots;
   const PW = Paintings.W;
   const PH = Paintings.H;
   const FB = Figure.BOX;
@@ -16,7 +17,6 @@
   const PLAYER_COLORS = ['#ffd23f', '#4cc9f0', '#ff6b9a', '#7ae582', '#c77dff', '#ff9f43', '#f1f3f5', '#5c7cfa'];
   const BOT_NAMES = ['Pincelín', 'Brochita', 'Acuarela', 'Picasso.exe', 'Manchitas', 'Óleo', 'Garabato', 'Pastelito'];
   const BRUSH_SIZES = [4, 8, 14, 24, 40];
-  // Cuánto puede moverse el dedo (o el ratón) en un toque antes de convertirse en un arrastre, y margen para acertar.
   const TAP_SLOP = { mouse: 8, touch: 14 };
   const HIT_TOLERANCE = { mouse: 9, touch: 14 };
 
@@ -42,13 +42,6 @@
     return c;
   };
   const hex = (r, g, b) => '#' + ((1 << 24) | (r << 16) | (g << 8) | b).toString(16).slice(1);
-  const gauss = () => {
-    let u = 0;
-    let v = 0;
-    while (!u) u = Math.random();
-    while (!v) v = Math.random();
-    return Math.sqrt(-2 * Math.log(u)) * Math.cos(TAU * v);
-  };
   const shuffle = (arr) => {
     const a = arr.slice();
     for (let i = a.length - 1; i > 0; i--) {
@@ -126,127 +119,75 @@
   })();
 
   // ---------------------------------------------------------------- cuadros
-  // Dos galerías: los cuadros clásicos se generan por código (índice + semilla) y las obras de arte son imágenes.
   const paintCache = new Map();
-  const isArt = (gallery) => gallery === 'arte';
-  const paintKey = (gallery, idx, seed) => (isArt(gallery) ? 'arte:' + idx : idx + ':' + seed);
+  const artImages = new Map();
+  let phaseRevision = 0;
+
+  function loadArtwork(idx) {
+    if (artImages.has(idx)) return artImages.get(idx);
+    const work = window.HumanArt && HumanArt.works[idx];
+    if (!work) return Promise.reject(new Error('La obra no está disponible.'));
+    const pending = new Promise((resolve, reject) => {
+      const image = new Image();
+      const timer = setTimeout(() => image.onerror(), 15000);
+      image.onload = () => { clearTimeout(timer); work.image = image; resolve(image); };
+      image.onerror = () => {
+        clearTimeout(timer);
+        image.onload = null;
+        image.onerror = null;
+        artImages.delete(idx);
+        reject(new Error('No se pudo cargar «' + work.title + '». Revisa tu conexión y vuelve a intentarlo.'));
+      };
+      if (!work.file) image.crossOrigin = 'anonymous';
+      image.src = work.file || work.imageUrl;
+    });
+    artImages.set(idx, pending);
+    return pending;
+  }
 
   function extractPalette(data) {
     const counts = new Map();
     const step = 4 * 5;
     for (let i = 0; i < data.length; i += step) {
-      const key = (data[i] << 16) | (data[i + 1] << 8) | data[i + 2];
-      counts.set(key, (counts.get(key) || 0) + 1);
+      // Agrupa tonos cercanos: las reproducciones tienen miles de colores únicos.
+      const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
+      const bucket = counts.get(key) || { count: 0, r: 0, g: 0, b: 0 };
+      bucket.count++;
+      bucket.r += data[i]; bucket.g += data[i + 1]; bucket.b += data[i + 2];
+      counts.set(key, bucket);
     }
     const total = data.length / step;
-    return [...counts.entries()]
-      .filter(([, c]) => c / total > 0.003)
-      .sort((a, b) => b[1] - a[1])
+    return [...counts.values()]
+      .filter((c) => c.count / total > 0.003)
+      .sort((a, b) => b.count - a.count)
       .slice(0, 18)
-      .map(([k]) => '#' + k.toString(16).padStart(6, '0'));
+      .map((c) => hex(Math.round(c.r / c.count), Math.round(c.g / c.count), Math.round(c.b / c.count)));
   }
 
-  /** Paleta de una obra con degradados: agrupa colores parecidos y descarta los casi repetidos. */
-  function extractArtPalette(data) {
-    const buckets = new Map();
-    for (let i = 0; i < data.length; i += 4 * 3) {
-      const key = ((data[i] >> 4) << 8) | ((data[i + 1] >> 4) << 4) | (data[i + 2] >> 4);
-      let b = buckets.get(key);
-      if (!b) { b = [0, 0, 0, 0]; buckets.set(key, b); }
-      b[0] += data[i];
-      b[1] += data[i + 1];
-      b[2] += data[i + 2];
-      b[3]++;
-    }
-    const picked = [];
-    for (const b of [...buckets.values()].sort((x, y) => y[3] - x[3])) {
-      const c = [b[0] / b[3], b[1] / b[3], b[2] / b[3]].map(Math.round);
-      if (picked.some((o) => (o[0] - c[0]) ** 2 + (o[1] - c[1]) ** 2 + (o[2] - c[2]) ** 2 < 900)) continue;
-      picked.push(c);
-      if (picked.length >= 18) break;
-    }
-    return picked.map((c) => hex(c[0], c[1], c[2]));
-  }
-
-  function remember(key, p) {
-    paintCache.set(key, p);
-    if (paintCache.size > 6) paintCache.delete(paintCache.keys().next().value);
-    return p;
-  }
-
-  /** Cuadro clásico: se genera al momento con su índice y su semilla. */
-  function getPainting(idx, seed) {
-    const key = paintKey('clasico', idx, seed);
+  function getPainting(idx, seed, difficulty = 0, collection = 0) {
+    const key = [collection, difficulty, idx, seed].join(':');
     let p = paintCache.get(key);
     if (!p) {
       const canvas = makeCanvas(PW, PH);
-      Paintings.render(idx, seed, canvas);
+      let name;
+      let work = null;
+      if (collection === 1) {
+        work = HumanArt.works[idx];
+        const image = work.image;
+        if (!image) throw new Error('La obra aún no se ha cargado.');
+        const side = Math.min(image.naturalWidth, image.naturalHeight);
+        canvas.getContext('2d').drawImage(image, (image.naturalWidth - side) / 2, (image.naturalHeight - side) / 2, side, side, 0, 0, PW, PH);
+        name = work.shortTitle || work.title;
+      } else {
+        Paintings.render(idx, seed, canvas, difficulty);
+        name = Paintings.names[idx % Paintings.count];
+      }
       const data = canvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, PW, PH).data;
-      p = remember(key, {
-        canvas, data, idx, seed, key, gallery: 'clasico', name: Paintings.names[idx % Paintings.count], palette: extractPalette(data),
-      });
+      p = { canvas, data, idx, seed, difficulty, collection, work, name, palette: extractPalette(data) };
+      paintCache.set(key, p);
+      if (paintCache.size > 6) paintCache.delete(paintCache.keys().next().value);
     }
     return p;
-  }
-
-  function loadImage(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.decoding = 'async';
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('No se pudo cargar ' + src));
-      img.src = src;
-    });
-  }
-
-  const artJobs = new Map();
-  /** Descarga y prepara una obra de arte, con reintentos. */
-  function loadArtwork(idx) {
-    const key = paintKey('arte', idx);
-    if (paintCache.has(key)) return Promise.resolve(paintCache.get(key));
-    if (!artJobs.has(key)) {
-      const job = (async () => {
-        let error;
-        for (let attempt = 0; attempt < 3; attempt++) {
-          if (attempt) await new Promise((r) => setTimeout(r, 1200 * attempt));
-          try {
-            const img = await loadImage(Artworks.url(idx));
-            const canvas = makeCanvas(PW, PH);
-            const ctx = canvas.getContext('2d', { willReadFrequently: true });
-            ctx.drawImage(img, 0, 0, PW, PH);
-            const data = ctx.getImageData(0, 0, PW, PH).data;
-            const info = Artworks.info(idx);
-            return remember(key, {
-              canvas, data, idx, seed: 0, key, gallery: 'arte', name: info.name, artist: info.artist, palette: extractArtPalette(data),
-            });
-          } catch (e) { error = e; }
-        }
-        throw error;
-      })();
-      artJobs.set(key, job);
-      job.finally(() => artJobs.delete(key)).catch(() => {});
-    }
-    return artJobs.get(key);
-  }
-
-  /** El cuadro de una fase si ya está listo; null si la obra aún se está descargando. */
-  function cachedPainting(m) {
-    return isArt(m.gallery) ? paintCache.get(paintKey('arte', m.painting)) || null : getPainting(m.painting, m.seed);
-  }
-
-  function paintingFor(m) {
-    return isArt(m.gallery) ? loadArtwork(m.painting) : Promise.resolve(getPainting(m.painting, m.seed));
-  }
-
-  const artPrefetch = [];
-  /** Calienta la caché del navegador con todas las obras (≈1,5 MB) para que cada ronda empiece sin esperas. */
-  function prefetchArt() {
-    if (artPrefetch.length || location.protocol === 'file:') return;
-    for (let i = 0; i < Artworks.count; i++) {
-      const img = new Image();
-      img.src = Artworks.url(i);
-      artPrefetch.push(img);
-    }
   }
 
   /**
@@ -255,7 +196,7 @@
    */
   function computeBlend(figData, fx, fy, painting) {
     const pdata = painting.data;
-    const r = isArt(painting.gallery) ? 2 : 0;
+    const r = painting.collection === 1 ? 2 : 0;
     let total = 0;
     let ok = 0;
     for (let j = 0; j < FB; j++) {
@@ -315,26 +256,65 @@
     return c;
   }
 
-  // ---------------------------------------------------------------- bots (modo CPU)
-  const BOT_LEVELS = {
-    easy: { shift: 8, cell: 8, noise: 14, holes: 3, holeSize: [9, 16], seekMul: 1.5, readyAt: [20, 40] },
-    normal: { shift: 4, cell: 4, noise: 7, holes: 1, holeSize: [5, 9], seekMul: 1.0, readyAt: [25, 50] },
-    hard: { shift: 2, cell: 2, noise: 6, holes: 1, holeSize: [3, 4], seekMul: 0.7, readyAt: [30, 55] },
-  };
+  // ---------------------------------------------------------------- CPU: pintura local y decisiones compartidas
+  const BOT_LEVELS = Bots.PROFILES; // también lo usa Pincelín en el tutorial
+  const botMasks = new Map();
+
+  function botMask(pose) {
+    if (!botMasks.has(pose)) {
+      const canvas = makeCanvas(FB, FB);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      Figure.drawMask(ctx, pose, '#ffffff');
+      const image = ctx.getImageData(0, 0, FB, FB);
+      const samples = [];
+      for (let y = 0; y < FB; y += 6) {
+        for (let x = 0; x < FB; x += 6) {
+          if (image.data[(y * FB + x) * 4 + 3] > 200) samples.push([x, y]);
+        }
+      }
+      botMasks.set(pose, { image, samples });
+    }
+    return botMasks.get(pose);
+  }
 
   function makeBotFigure(p, L, opts = {}) {
-    const pose = opts.pose != null ? opts.pose : randInt(0, Figure.POSES.length - 1);
-    const { bbox } = Figure.shape(pose);
-    const { x, y } = Figure.clampPos(pose,
-      opts.x != null ? opts.x : Math.round(-bbox.x0 + Math.random() * (PW - (bbox.x1 - bbox.x0))),
-      opts.y != null ? opts.y : Math.round(-bbox.y0 + Math.random() * (PH - (bbox.y1 - bbox.y0))), PW, PH);
+    const rng = opts.rng || (opts.seed != null ? Bots.seeded(opts.seed) : Math.random);
+    const integer = (min, max) => Math.floor(min + rng() * (max - min + 1));
+    // Antes de pintar, prueba zonas y poses. Las texturas simples admiten pinceles más gruesos.
+    let best = null;
+    const count = opts.x != null && opts.y != null && opts.pose != null ? 1 : L.placementCandidates;
+    for (let n = 0; n < count; n++) {
+      const pose = opts.pose != null ? opts.pose : integer(0, Figure.POSES.length - 1);
+      const { bbox } = Figure.shape(pose);
+      const { x, y } = Figure.clampPos(pose,
+        opts.x != null ? opts.x : -bbox.x0 + rng() * (PW - (bbox.x1 - bbox.x0)),
+        opts.y != null ? opts.y : -bbox.y0 + rng() * (PH - (bbox.y1 - bbox.y0)), PW, PH);
+      let cost = 0;
+      const samples = botMask(pose).samples;
+      for (const [i, j] of samples) {
+        const q = ((y + j) * PW + x + i) * 4;
+        const px = clamp(x + Math.floor(i / L.cell) * L.cell + (L.cell >> 1), 0, PW - 1);
+        const py = clamp(y + Math.floor(j / L.cell) * L.cell + (L.cell >> 1), 0, PH - 1);
+        const a = (py * PW + px) * 4;
+        const b = (clamp(y + j + L.shift, 0, PH - 1) * PW + clamp(x + i + L.shift, 0, PW - 1)) * 4;
+        for (let channel = 0; channel < 3; channel++) {
+          cost += Math.abs(p.data[q + channel] - p.data[a + channel]);
+          cost += Math.abs(p.data[q + channel] - p.data[b + channel]) * 0.5;
+        }
+      }
+      cost /= Math.max(1, samples.length);
+      if (!best || cost < best.cost) best = { pose, x, y, cost };
+    }
+    const { pose, x, y } = best;
     const c = makeCanvas(FB, FB);
     const ctx = c.getContext('2d', { willReadFrequently: true });
-    Figure.drawMask(ctx, pose, '#ffffff');
-    const img = ctx.getImageData(0, 0, FB, FB);
+    // Copia la máscara para conservar la caché entre jugadores y rondas.
+    const source = botMask(pose).image;
+    const img = ctx.createImageData(FB, FB);
+    img.data.set(source.data);
     const d = img.data;
-    const sx = randInt(-L.shift, L.shift);
-    const sy = randInt(-L.shift, L.shift);
+    const sx = integer(-L.shift, L.shift);
+    const sy = integer(-L.shift, L.shift);
     const cell = L.cell;
     const noise = new Map();
     for (let j = 0; j < FB; j++) {
@@ -348,7 +328,7 @@
         const q = (py * PW + px) * 4;
         const key = ci * 4096 + cj;
         let n = noise.get(key);
-        if (n == null) { n = Math.round((Math.random() * 2 - 1) * L.noise); noise.set(key, n); }
+        if (n == null) { n = Math.round((rng() * 2 - 1) * L.noise); noise.set(key, n); }
         d[k] = clamp(p.data[q] + n, 0, 255);
         d[k + 1] = clamp(p.data[q + 1] + n, 0, 255);
         d[k + 2] = clamp(p.data[q + 2] + n, 0, 255);
@@ -356,18 +336,16 @@
     }
     ctx.putImageData(img, 0, 0);
     ctx.globalCompositeOperation = 'source-atop';
-    ctx.fillStyle = Figure.WHITE;
+    // Siempre queda un pequeño descuido, incluso en un fondo de un solo color.
+    const samples = botMask(pose).samples;
     for (let h = 0; h < L.holes; h++) {
-      for (let tries = 0; tries < 40; tries++) {
-        const hx = randInt(bbox.x0, bbox.x1);
-        const hy = randInt(bbox.y0, bbox.y1);
-        if (d[(hy * FB + hx) * 4 + 3] > 200) {
-          const w = randInt(L.holeSize[0], L.holeSize[1]);
-          const hgt = randInt(L.holeSize[0], L.holeSize[1]);
-          ctx.fillRect(hx - w / 2, hy - hgt / 2, w, hgt);
-          break;
-        }
-      }
+      const [hx, hy] = samples[integer(0, samples.length - 1)];
+      const q = ((y + hy) * PW + x + hx) * 4;
+      const brightness = (p.data[q] + p.data[q + 1] + p.data[q + 2]) / 3;
+      ctx.fillStyle = brightness > 135 ? '#35344c' : Figure.WHITE;
+      const w = integer(L.holeSize[0], L.holeSize[1]);
+      const height = integer(L.holeSize[0], L.holeSize[1]);
+      ctx.fillRect(hx - w / 2, hy - height / 2, w, height);
     }
     ctx.globalCompositeOperation = 'source-over';
     const data = ctx.getImageData(0, 0, FB, FB).data;
@@ -377,7 +355,7 @@
   class Bot {
     constructor(room, name, level) {
       this.room = room;
-      this.level = BOT_LEVELS[level] || BOT_LEVELS.normal;
+      this.level = Bots.profile(level);
       this.timers = [];
       this.alive = true;
       this.phase = null;
@@ -387,7 +365,7 @@
           setTimeout(() => { if (this.alive) this.onMessage(c); }, 0);
         },
       };
-      this.player = room.join(this.conn, { name, bot: true }).player;
+      this.player = room.join(this.conn, { name, bot: true, level: this.level.key, botLevel: this.level.index }).player;
     }
 
     later(fn, ms) { this.timers.push(setTimeout(() => { if (this.alive) fn(); }, ms)); }
@@ -397,64 +375,90 @@
 
     onMessage(m) {
       if (m.t === 'phase') {
+        // Un aviso de últimos 30 s mantiene el dibujo y la preparación ya iniciados.
+        if (m.phase === 'hide' && this.phase?.phase === 'hide' && m.round === this.phase.round && m.seed === this.phase.seed) return;
         this.clear();
         this.phase = m;
         if (m.phase === 'hide') {
-          const [a, b] = this.level.readyAt;
-          const want = a + Math.random() * (b - a);
-          const sec = m.duration ? Math.min((m.duration / 1000) * 0.85, want) : want; // sin límite: a su ritmo
-          this.later(() => this.hide(m, 'submit'), sec * 1000);
+          const sec = Bots.readyDelay({ level: this.level.key, hideTime: m.duration == null ? collectionOf(m.collection).hideDefault : m.duration / 1000, seed: Bots.seedFor(m.seed, this.player.id) });
+          this.later(() => this.hide(m, 'submit').catch(() => {}), sec * 1000);
         } else if (m.phase === 'seek') {
-          this.seek(m);
+          this.seek(m).catch(() => {});
         }
       } else if (m.t === 'collect' && this.phase) {
-        this.hide(this.phase, 'figure');
+        this.hide(this.phase, 'figure').catch(() => {});
       }
     }
 
     async hide(m, type) {
-      if (!this.fig || this.figSeed !== m.seed) {
-        const p = await paintingFor(m);
-        if (!this.alive) return;
-        if (!this.fig || this.figSeed !== m.seed) {
-          this.fig = makeBotFigure(p, this.level);
-          this.figSeed = m.seed;
-        }
+      if (m.collection === 1) {
+        try { await loadArtwork(m.painting); } catch { return; }
+      }
+      if (!this.alive || this.phase !== m) return;
+      if (!this.fig || this.figSeed !== m.seed || this.figRound !== m.round) {
+        this.fig = makeBotFigure(getPainting(m.painting, m.seed, m.difficulty, m.collection), this.level, { seed: Bots.seedFor(m.seed, this.player.id) });
+        this.figSeed = m.seed;
+        this.figRound = m.round;
       }
       this.send({ t: type, fig: this.fig });
     }
 
     async seek(m) {
-      const p = await paintingFor(m);
-      if (!this.alive || this.phase !== m) return;
-      const limit = m.limit / 1000;
       const start = performance.now();
-      const plan = [];
+      if (m.collection === 1) {
+        try { await loadArtwork(m.painting); } catch { return; }
+      }
+      if (!this.alive || this.phase !== m) return;
+      const p = getPainting(m.painting, m.seed, m.difficulty, m.collection);
+      const limit = m.limit / 1000;
+      const targets = [];
       for (const id of m.participants) {
-        if (id === this.player.id) continue;
+        if (id === this.player.id || !m.figs[id]) continue;
         const f = m.figs[id];
         const img = await loadFigure(f.img);
-        const vis = 1 - computeBlend(img.data, f.x, f.y, p) / 100;
-        // en una obra de arte, con tanto detalle, también a la CPU le cuesta más encontrar
-        const t = (1.5 + 50 * Math.pow(Math.max(0, 1 - vis / 0.4), 2.5)) * this.level.seekMul * Math.exp(gauss() * 0.35)
-          * (isArt(m.gallery) ? 1.6 : 1);
-        plan.push({ id, t: Math.max(1.2, t) });
+        if (!this.alive || this.phase !== m) return;
+        targets.push({ id, blend: computeBlend(img.data, f.x, f.y, p) });
       }
-      if (!this.alive || this.phase !== m) return;
-      plan.sort((a, b) => a.t - b.t);
-      // buscar a varios lleva su tiempo: cada hallazgo empieza después del anterior
-      let acc = 0;
-      for (const step of plan) { acc = Math.max(acc + 1.2, step.t); step.t = acc; }
+      const plan = Bots.searchPlan({ level: this.level.key, targets, limit, seed: Bots.seedFor(m.seed, this.player.id) });
       const setup = (performance.now() - start) / 1000;
-      let last = 0;
-      for (const { id, t } of plan) {
-        if (t >= limit) break;
-        last = t;
-        this.later(() => this.send({ t: 'found', target: id, time: Math.round(t * 100) / 100 }), Math.max(0, t - setup) * 1000);
+      for (const { target, time } of plan) {
+        this.later(() => this.send({ t: 'found', target, time }), Math.max(0, time - setup) * 1000);
       }
-      const all = plan.every((s) => s.t < limit);
-      const end = all ? last : limit;
+      const end = plan.length === targets.length ? (plan.at(-1)?.time || 0) : limit;
       this.later(() => this.send({ t: 'seekDone', elapsed: end }), Math.max(0, end - setup) * 1000 + 250);
+    }
+  }
+
+  // El servidor decide por las CPU online; el anfitrión solo aporta el dibujo de sus figuras.
+  let onlineBotPhase = null;
+  let botPaintRevision = 0;
+  const botPaintJobs = new Map();
+  function cancelBotPainting() { botPaintRevision++; botPaintJobs.clear(); }
+
+  function paintOnlineBots(m) {
+    if (G.mode !== 'online' || G.room?.hostId !== G.me || !Array.isArray(m.bots)) return;
+    const revision = botPaintRevision;
+    const link = G.link;
+    const current = () => revision === botPaintRevision && G.mode === 'online' && G.link === link &&
+      link?.ready && G.room?.hostId === G.me && G.room.round === m.round &&
+      // Los mensajes phase avanzan antes de la siguiente difusión del roster (room).
+      onlineBotPhase?.round === m.round && onlineBotPhase.seed === m.seed &&
+      ['prepare', 'hide', 'check'].includes(onlineBotPhase.phase);
+    if (!current()) return;
+    for (const bot of m.bots) {
+      const key = [m.round, m.seed, m.painting, m.collection, m.difficulty, bot.id, bot.level, bot.seed].join(':');
+      if (botPaintJobs.has(key)) continue;
+      const job = {};
+      botPaintJobs.set(key, job);
+      const run = async () => {
+        if (m.collection === 1) await loadArtwork(m.painting);
+        if (!current()) { if (botPaintJobs.get(key) === job) botPaintJobs.delete(key); return; }
+        const p = getPainting(m.painting, m.seed, m.difficulty, m.collection);
+        const fig = makeBotFigure(p, Bots.profile(bot.level), { seed: bot.seed });
+        if (!current()) { if (botPaintJobs.get(key) === job) botPaintJobs.delete(key); return; }
+        link.send({ t: 'botFigure', botId: bot.id, round: m.round, seed: m.seed, fig });
+      };
+      run().catch(() => { if (botPaintJobs.get(key) === job) botPaintJobs.delete(key); });
     }
   }
 
@@ -526,7 +530,7 @@
 
   class NetLink {
     constructor(hello, onMessage, onState) {
-      this.hello = hello;
+      this.hello = { ...hello, protocol: window.HideRoom.PROTOCOL_VERSION, catalog: window.HideRoom.CATALOG_VERSION };
       this.onMessage = onMessage;
       this.onState = onState;
       this.tries = 0;
@@ -580,12 +584,20 @@
           return;
         }
         if (m.t === 'welcome') {
+          if (m.protocol == null || m.catalog == null || m.protocol !== window.HideRoom.PROTOCOL_VERSION ||
+              m.catalog !== window.HideRoom.CATALOG_VERSION) {
+            this.fail('rejected', 'Esta sala usa otra versión del juego. Actualiza la página o vuelve a intentarlo cuando el servidor esté actualizado.');
+            return;
+          }
           const reconnecting = this.welcomed;
           this.welcomed = true;
           this.ready = true;
           this.tries = 0;
           clearTimeout(this.timeout);
-          this.hello = { t: 'join', code: m.code, name: this.hello.name, pid: this.hello.pid };
+          this.hello = {
+            t: 'join', code: m.code, name: this.hello.name, pid: this.hello.pid,
+            protocol: window.HideRoom.PROTOCOL_VERSION, catalog: window.HideRoom.CATALOG_VERSION,
+          };
           clearInterval(this.ping);
           this.ping = setInterval(() => {
             this.send({ t: 'ping' });
@@ -632,7 +644,6 @@
     screen: 'scr-menu',
     phase: 'none',
     phaseMsg: null,
-    pendingPhase: null, // fase que espera a que termine de descargarse su obra de arte
     phaseEnd: null,
     phaseDur: 0,
     round: 0,
@@ -676,10 +687,10 @@
   // ---------------------------------------------------------------- pantallas y avisos
   function showScreen(id) {
     G.screen = id;
-    if (id !== 'scr-menu') BackGuard.arm();
     $$('.screen').forEach((s) => s.classList.toggle('active', s.id === id));
     document.body.classList.toggle('show-menu-bg', id !== 'scr-game');
     if (id === 'scr-game') requestAnimationFrame(layout);
+    if (id !== 'scr-menu') BackGuard.arm();
   }
 
   function toast(msg, kind = '') {
@@ -899,29 +910,35 @@
 
   function pushUndo() {
     G.undo.push(G.paintCtx.getImageData(0, 0, FB, FB));
-    if (G.undo.length > 40) G.undo.shift();
+    const trimmed = G.undo.length > 40 ? G.undo.shift() : null;
     G.redo = [];
+    return trimmed;
   }
 
   function undo() {
     if (!canEdit() || !G.undo.length) return;
+    G.stroke = null;
     G.redo.push(G.paintCtx.getImageData(0, 0, FB, FB));
     G.paintCtx.putImageData(G.undo.pop(), 0, 0);
     recomposite();
+    updateControls();
   }
 
   function redo() {
     if (!canEdit() || !G.redo.length) return;
+    G.stroke = null;
     G.undo.push(G.paintCtx.getImageData(0, 0, FB, FB));
     G.paintCtx.putImageData(G.redo.pop(), 0, 0);
     recomposite();
+    updateControls();
   }
 
   function beginStroke(pt) {
-    pushUndo();
+    const redo = G.redo;
+    const trimmed = pushUndo();
     const x = pt.x - G.fig.x;
     const y = pt.y - G.fig.y;
-    G.stroke = { x, y };
+    G.stroke = { x, y, redo, trimmed };
     const c = G.paintCtx;
     c.fillStyle = G.color;
     c.beginPath();
@@ -929,6 +946,7 @@
     c.fill();
     addRecent(G.color);
     recomposite();
+    updateControls();
     tutEvent('stroke');
   }
 
@@ -945,13 +963,19 @@
     c.moveTo(G.stroke.x, G.stroke.y);
     c.lineTo(x, y);
     c.stroke();
-    G.stroke = { x, y };
+    G.stroke.x = x;
+    G.stroke.y = y;
   }
 
   function cancelStroke() {
-    if (G.stroke && G.undo.length) G.paintCtx.putImageData(G.undo.pop(), 0, 0);
+    if (G.stroke && G.undo.length) {
+      G.paintCtx.putImageData(G.undo.pop(), 0, 0);
+      if (G.stroke.trimmed) G.undo.unshift(G.stroke.trimmed);
+      G.redo = G.stroke.redo;
+    }
     G.stroke = null;
     recomposite();
+    updateControls();
   }
 
   function colorAt(x, y) {
@@ -1124,10 +1148,9 @@
     for (const act of ['pick', 'undo', 'redo']) {
       const b = $(`.stool[data-act="${act}"]`);
       b.hidden = !playing;
-      b.disabled = !editing;
+      b.disabled = !editing || (act === 'undo' && !G.undo.length) || (act === 'redo' && !G.redo.length);
     }
     $('.stool[data-act="pick"]').classList.toggle('on', G.tool === 'pick');
-    // «Mover vista» solo hace falta mientras pintas: al buscar, arrastrar con un dedo ya mueve la vista
     $('.stool[data-act="hand"]').hidden = !editing;
     $('.stool[data-act="hand"]').classList.toggle('on', G.tool === 'hand');
     $('#side-tools').hidden = !['hide', 'seek', 'results', 'check', 'prepare'].includes(G.phase);
@@ -1145,7 +1168,6 @@
 
   function updateStatus() {
     const ph = G.phase;
-    if (ph === 'loading') return setStatus('CARGANDO LA OBRA…', 'Un momento');
     if (ph === 'prepare') return setStatus('¡PREPÁRENSE!', 'Un nuevo cuadro… ¡fíjate bien en él!');
     if (ph === 'hide') {
       if (!meActive()) return setStatus('LOS DEMÁS SE ESTÁN ESCONDIENDO', 'Jugarás en la siguiente ronda');
@@ -1171,17 +1193,16 @@
   function setCursor() {
     view.className = '';
     if (action && (action.type === 'pan' || action.type === 'pinch')) view.classList.add('grabbing');
-    else if (G.spaceDown || G.tool === 'hand') view.classList.add('grab');
+    else if (G.spaceDown || (canEdit() && G.tool === 'hand')) view.classList.add('grab');
     else if (canEdit() && G.tool === 'pick') view.classList.add('none');
     else if (canEdit() && !G.fig.locked) view.classList.add('move');
     else if (canEdit() || (G.phase === 'seek' && G.seek && G.seek.participant && !G.seek.done)) view.classList.add('none');
   }
 
   // ---------------------------------------------------------------- entrada (ratón / táctil)
-  // Cada puntero guarda dónde y cuándo empezó, para distinguir toques, arrastres y pellizcos.
   const pointers = new Map();
   let action = null;
-  const slopOf = (type) => (type === 'mouse' ? TAP_SLOP.mouse : TAP_SLOP.touch);
+  const slopOf = (type) => type === 'mouse' ? TAP_SLOP.mouse : TAP_SLOP.touch;
 
   function startPinch() {
     if (action && action.type === 'paint') cancelStroke();
@@ -1219,8 +1240,7 @@
   view.addEventListener('pointerdown', (e) => {
     Sound.unlock();
     closePopovers();
-    // El primer dedo de un toque nuevo implica que no queda ningún otro en pantalla: si guardábamos alguno
-    // (porque se perdió su pointerup), lo olvidamos. Si no, cada toque posterior parecería un pellizco.
+    // Un nuevo puntero principal recupera los pointerup perdidos al cambiar de aplicación.
     if (e.isPrimary) {
       for (const [id, p] of pointers) if (p.type === e.pointerType) pointers.delete(id);
       if (!pointers.size && action) {
@@ -1245,7 +1265,6 @@
       action = { type: 'paint' };
       return;
     }
-    // Fuera de la pintura, un toque marca (al buscar) y un arrastre mueve la vista.
     action = { type: 'tap', sx: pt.sx, sy: pt.sy, ox: G.view.ox, oy: G.view.oy, slop: slopOf(e.pointerType) };
   });
 
@@ -1254,7 +1273,7 @@
     G.hover = pt;
     const p = pointers.get(e.pointerId);
     if (p) { p.sx = pt.sx; p.sy = pt.sy; }
-    if (!action) return;
+    if (!p || !action) return;
     switch (action.type) {
       case 'pinch': updatePinch(); break;
       case 'pan':
@@ -1265,6 +1284,9 @@
       case 'tap':
         if (Math.hypot(pt.sx - action.sx, pt.sy - action.sy) > action.slop) {
           action = { type: 'pan', sx: action.sx, sy: action.sy, ox: action.ox, oy: action.oy };
+          G.view.ox = action.ox + (pt.sx - action.sx);
+          G.view.oy = action.oy + (pt.sy - action.sy);
+          clampView();
           setCursor();
         }
         break;
@@ -1292,11 +1314,10 @@
       if (rest.length >= 2) {
         startPinch();
       } else if (rest.length === 1) {
-        // Un toque rápido mientras otro dedo descansa en la pantalla (el pulgar que sujeta el móvil) sigue
-        // siendo un toque: deshacemos el zoom accidental y lo contamos como intento de encontrar.
-        const now = performance.now();
-        const tapWhileResting = done && G.phase === 'seek' && now - p.t0 < 350 && p.t0 - rest[0].t0 > 300
-          && Math.hypot(p.sx - p.x0, p.sy - p.y0) < slopOf(p.type);
+        // Un toque junto a un pulgar inmóvil que sujeta el móvil sigue siendo un intento.
+        const still = (point) => Math.hypot(point.sx - point.x0, point.sy - point.y0) < slopOf(point.type);
+        const tapWhileResting = done && G.phase === 'seek' && p.type === 'touch' && rest[0].type === 'touch'
+          && performance.now() - p.t0 < 350 && p.t0 - rest[0].t0 > 300 && still(p) && still(rest[0]);
         if (tapWhileResting) {
           G.view.z = action.z0;
           G.view.ox = action.ox0;
@@ -1304,7 +1325,6 @@
           clampView();
           guess(fromScreen(p.x0, p.y0), p.type);
         }
-        // con el dedo que queda, se sigue moviendo la vista
         action = { type: 'pan', sx: rest[0].sx, sy: rest[0].sy, ox: G.view.ox, oy: G.view.oy };
       } else {
         action = null;
@@ -1313,18 +1333,19 @@
       return;
     }
     const pt = toPaint(e);
-    if (action.type === 'paint') { G.stroke = null; recomposite(); }
-    else if (action.type === 'pick' && done) pickColorAt(pt);
+    if (action.type === 'paint') {
+      if (done) { G.stroke = null; recomposite(); }
+      else cancelStroke();
+    } else if (action.type === 'pick' && done) pickColorAt(pt);
     else if (action.type === 'tap' && done && G.phase === 'seek') guess(pt, e.pointerType);
     action = null;
     setCursor();
   }
   view.addEventListener('pointerup', endPointer);
   view.addEventListener('pointercancel', endPointer);
+  view.addEventListener('lostpointercapture', endPointer);
   view.addEventListener('pointerleave', () => { if (!action) G.hover = null; });
   view.addEventListener('contextmenu', (e) => e.preventDefault());
-  // Safari (iPhone/iPad) ignora user-scalable=no: evitamos que un pellizco fuera del cuadro amplíe toda la página.
-  document.addEventListener('gesturestart', (e) => { if (G.screen === 'scr-game') e.preventDefault(); });
   view.addEventListener('wheel', (e) => {
     e.preventDefault();
     const pt = toPaint(e);
@@ -1332,6 +1353,7 @@
   }, { passive: false });
   // Safari: gestos de pellizco del trackpad
   view.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener('gesturestart', (e) => { if (G.screen === 'scr-game') e.preventDefault(); }, { passive: false });
 
   window.addEventListener('keydown', (e) => {
     const tag = (e.target && e.target.tagName) || '';
@@ -1343,7 +1365,11 @@
       e.preventDefault();
       return;
     }
-    if (e.key.toLowerCase() === 'f' && !e.ctrlKey && !e.metaKey && !e.altKey) { Fullscreen.toggle(); return; }
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'f') {
+      e.preventDefault();
+      $(G.screen === 'scr-game' ? '#btn-fullscreen' : '#btn-fullscreen-menu').click();
+      return;
+    }
     if (G.screen !== 'scr-game') return;
     const mod = e.ctrlKey || e.metaKey;
     const k = e.key.toLowerCase();
@@ -1380,7 +1406,13 @@
   window.addEventListener('keyup', (e) => {
     if (e.code === 'Space') { G.spaceDown = false; setCursor(); }
   });
-  window.addEventListener('blur', () => { G.spaceDown = false; });
+  window.addEventListener('blur', () => {
+    G.spaceDown = false;
+    if (action?.type === 'paint') { G.stroke = null; recomposite(); }
+    action = null;
+    pointers.clear();
+    setCursor();
+  });
 
   // ---------------------------------------------------------------- búsqueda
   function seekElapsed() {
@@ -1404,11 +1436,10 @@
     return false;
   }
 
-  function guess(pt, pointerType) {
+  function guess(pt, pointerType = 'mouse') {
     const s = G.seek;
     if (!s || !s.participant || s.done || !s.loaded) return;
     if (pt.x < 0 || pt.y < 0 || pt.x >= PW || pt.y >= PH) return;
-    // con el dedo se apunta peor que con el ratón: algo más de margen alrededor de la figura
     const tol = Math.max(3, (pointerType === 'mouse' ? HIT_TOLERANCE.mouse : HIT_TOLERANCE.touch) / G.view.s);
     for (const t of s.targets) {
       if (s.found.has(t.id) || !hitFig(t, pt.x, pt.y, tol)) continue;
@@ -1454,8 +1485,9 @@
       loaded: false,
       participant: m.participants.includes(G.me) && meActive(),
     };
-    await loadFigs(m.figs);
-    if (!G.seek || G.seek.token !== token) return;
+    const figs = await loadFigs(m.figs);
+    if (G.phase !== 'seek' || G.round !== m.round || !G.seek || G.seek.token !== token) return;
+    G.figs = figs;
     G.seek.targets = m.participants.filter((id) => id !== G.me && G.figs[id]).map((id) => G.figs[id]);
     G.seek.loaded = true;
     updateHudSub();
@@ -1468,7 +1500,7 @@
       const img = await loadFigure(f.img);
       out[id] = { id, x: f.x, y: f.y, pose: f.pose, blend: f.blend, canvas: img.canvas, data: img.data, outline: null };
     }));
-    G.figs = out;
+    return out;
   }
 
   function onFound(m) {
@@ -1484,55 +1516,41 @@
 
   // ---------------------------------------------------------------- fases
   function hideOverlays() {
-    $('#ov-loading').hidden = true;
     $('#ov-countdown').hidden = true;
     $('#ov-check').hidden = true;
     $('#ov-results').hidden = true;
     $('#btn-unpeek').hidden = true;
   }
 
-  /** Fases que se juegan sobre el cuadro. */
-  const paintedPhase = (ph) => ['prepare', 'hide', 'check', 'seek', 'results'].includes(ph);
-
-  /** La obra de esta fase aún se descarga: lo indicamos y entramos en la fase en cuanto esté lista. */
-  function waitForPainting(m) {
-    G.pendingPhase = m;
-    G.phase = 'loading';
-    G.painting = null;
-    closePopovers();
-    action = null;
-    pointers.clear();
-    if (G.screen !== 'scr-game') showScreen('scr-game');
-    hideOverlays();
-    const info = Artworks.info(m.painting);
-    $('#loading-name').textContent = `«${info.name}» · ${info.artist}`;
-    $('#loading-err').textContent = '';
-    $('#ov-loading').hidden = false;
-    $('#hud-round').textContent = `Ronda ${m.round}/${m.rounds}`;
-    $('#hud-paint').textContent = info.name;
-    $('#spectate').hidden = true;
-    updateControls();
-    updateHudSub();
-    paintingFor(m).then(() => {
-      if (G.pendingPhase === m) enterPhase(m);
-    }, () => {
-      if (G.pendingPhase !== m) return;
-      $('#loading-err').textContent = 'No se pudo descargar la obra. Reintentando…';
-      setTimeout(() => { if (G.pendingPhase === m) waitForPainting(m); }, 4000);
-    });
-  }
-
-  function enterPhase(m) {
-    if (paintedPhase(m.phase) && !cachedPainting(m)) { waitForPainting(m); return; }
-    G.pendingPhase = null;
+  async function enterPhase(m) {
+    const revision = ++phaseRevision;
+    const receivedAt = performance.now();
+    if (m.collection === 1 && !['lobby', 'final'].includes(m.phase)) {
+      const work = HumanArt.works[m.painting];
+      if (!work || !work.image) {
+        showScreen('scr-game');
+        hideOverlays();
+        $('#ov-countdown').hidden = false;
+        $('#count-num').textContent = '…';
+        $('#count-paint').textContent = 'Cargando obra…';
+      }
+      try { await loadArtwork(m.painting); }
+      catch (error) {
+        if (revision === phaseRevision) { leaveGame(); toast(error.message, 'bad'); }
+        return;
+      }
+      if (revision !== phaseRevision) return;
+      const elapsed = performance.now() - receivedAt;
+      m = { ...m };
+      if (m.duration != null) m.duration = Math.max(0, m.duration - elapsed);
+      if (m.phase === 'seek' && m.limit != null) m.limit = Math.max(0, m.limit - elapsed);
+    }
     const same = m.phase === G.phase && m.round === G.round && m.phase !== 'lobby';
-    const hurried = !!(G.phaseMsg && G.phaseMsg.hurry);
+    const hurried = !!G.phaseMsg?.hurry;
     G.phaseMsg = m;
-    // el plazo cuenta desde que llegó el mensaje, aunque la obra haya tardado en descargarse
-    G.phaseEnd = m.duration != null ? (m.at || performance.now()) + m.duration : null;
+    G.phaseEnd = m.duration != null ? performance.now() + m.duration : null;
     G.phaseDur = m.duration || 0;
     if (same) {
-      // reconexión (seguimos donde estábamos) o el anfitrión dio los últimos 30 segundos
       if (m.phase === 'hide' && m.hurry && !hurried) { banner('¡ÚLTIMOS 30 S!'); Sound.go(); }
       updateControls();
       updateHudSub();
@@ -1555,17 +1573,32 @@
     }
     if (m.phase === 'final') { showFinal(m); return; }
 
-    const painting = cachedPainting(m);
-    if (G.painting !== painting) {
-      G.painting = painting;
+    if (!G.painting || G.painting.idx !== m.painting || G.painting.seed !== m.seed ||
+        G.painting.difficulty !== (m.difficulty ?? 0) || G.painting.collection !== (m.collection ?? 0)) {
+      try { G.painting = getPainting(m.painting, m.seed, m.difficulty, m.collection); }
+      catch {
+        leaveGame();
+        toast('No se pudo leer la imagen del cuadro. Vuelve a intentarlo.', 'bad');
+        return;
+      }
       renderSwatches($('#palette'), G.painting.palette);
     }
-    if (m.phase !== 'hide') G.tool = 'brush';
+    const credit = $('#art-credit');
+    credit.replaceChildren();
+    credit.hidden = !G.painting.work;
+    if (G.painting.work) {
+      const work = G.painting.work;
+      const source = el('a', '', work.title + ' — ' + work.artist + ' · ' + work.date + ' · ' + work.museum + ' · ' + work.license);
+      source.href = work.source;
+      source.target = '_blank';
+      source.rel = 'noopener noreferrer';
+      credit.append(source);
+    }
     if (m.phase === 'prepare' || G.figRound !== m.round) resetOwnFigure(m.round);
     if (G.screen !== 'scr-game') showScreen('scr-game');
     $('#hud-round').textContent = G.mode === 'tutorial' ? 'Tutorial' : `Ronda ${m.round}/${m.rounds}`;
     $('#hud-paint').textContent = G.painting.name;
-    $('#hud-paint').title = G.painting.artist ? `${G.painting.name} · ${G.painting.artist}` : G.painting.name;
+    $('#hud-paint').title = G.painting.work ? G.painting.work.title : G.painting.name;
     hideOverlays();
     $('#spectate').hidden = meActive();
 
@@ -1577,7 +1610,7 @@
         G.fx = [];
         resetZoom();
         $('#ov-countdown').hidden = false;
-        $('#count-paint').textContent = '«' + G.painting.name + '»' + (G.painting.artist ? ' · ' + G.painting.artist : '');
+        $('#count-paint').textContent = '«' + G.painting.name + '»';
         break;
       case 'hide':
         G.tool = 'brush';
@@ -1643,7 +1676,11 @@
     G.results = m;
     G.peek = false;
     if (G.seek && !G.seek.done) G.seek.done = true;
-    if (!Object.keys(G.figs).length) await loadFigs(m.figs);
+    if (!Object.keys(G.figs).length) {
+      const figs = await loadFigs(m.figs);
+      if (G.phase !== 'results' || G.round !== m.round || G.results !== m) return;
+      G.figs = figs;
+    }
     for (const id of Object.keys(G.figs)) G.figs[id].outline = makeOutline(G.figs[id].canvas, colorOf(id), 4);
     const tiles = $('#res-tiles');
     tiles.replaceChildren();
@@ -1714,9 +1751,7 @@
     let text = '';
     if (G.mode === 'tutorial' && (G.phase === 'hide' || G.phase === 'check')) text = 'SIN PRISA';
     else if (G.phase === 'prepare') text = `${act.length} JUGADORES`;
-    else if (G.phase === 'hide') {
-      text = (G.phaseEnd == null ? 'SIN LÍMITE · ' : '') + `LISTOS ${act.filter((p) => p.ready).length}/${act.length}`;
-    }
+    else if (G.phase === 'hide') text = `LISTOS ${act.filter((p) => p.ready).length}/${act.length}`;
     else if (G.phase === 'check') text = 'COMPROBANDO';
     else if (G.phase === 'seek') {
       const s = G.seek;
@@ -1737,10 +1772,9 @@
     let remain = G.phaseEnd != null ? (G.phaseEnd - now) / 1000 : 0;
     const s = G.seek;
     if (G.phase === 'seek' && s && s.participant) remain = s.done ? 0 : s.limit - seekElapsed();
-    const unlimited = G.phase === 'hide' && G.phaseEnd == null;
-    if (['results', 'prepare', 'check', 'loading'].includes(G.phase)) timer.textContent = '';
-    else timer.textContent = unlimited ? '∞' : fmtClock(remain);
-    const hurry = (G.phase === 'hide' && !unlimited && remain <= 10) || (G.phase === 'seek' && s && s.participant && !s.done && remain <= 5);
+    if (G.phase === 'results' || G.phase === 'prepare' || G.phase === 'check') timer.textContent = '';
+    else timer.textContent = G.phase === 'hide' && G.phaseEnd == null ? '∞' : fmtClock(remain);
+    const hurry = (G.phase === 'hide' && G.phaseEnd != null && remain <= 10) || (G.phase === 'seek' && s && s.participant && !s.done && remain <= 5);
     timer.classList.toggle('hurry', hurry && remain > 0);
     const whole = Math.ceil(remain);
     if (G.phase === 'prepare') {
@@ -1968,6 +2002,7 @@
   function onMessage(m) {
     switch (m.t) {
       case 'welcome':
+        cancelBotPainting();
         G.me = m.you;
         G.code = m.code;
         if (G.mode === 'online') {
@@ -1977,6 +2012,7 @@
         }
         break;
       case 'room':
+        if (G.room && (G.room.hostId !== m.hostId || G.room.round !== m.round)) cancelBotPainting();
         G.room = m;
         if (G.mode === 'online' && m.phase === 'lobby' && (G.phase === 'none' || G.phase === 'lobby')) {
           G.phase = 'lobby';
@@ -1987,8 +2023,18 @@
         if (G.screen === 'scr-game') updateControls();
         break;
       case 'phase':
-        m.at = performance.now();
+        if (G.mode === 'online') {
+          if (!onlineBotPhase || onlineBotPhase.round !== m.round || onlineBotPhase.seed !== m.seed || !['prepare', 'hide', 'check'].includes(m.phase)) cancelBotPainting();
+          onlineBotPhase = { round: m.round, seed: m.seed, phase: m.phase };
+        }
+        if (m.phase === 'prepare' && m.collection === 1 && G.mode === 'cpu' && G.localRoom) {
+          cpuArtDeck = G.localRoom.deckState();
+          store.set('artDeck', cpuArtDeck);
+        }
         enterPhase(m);
+        break;
+      case 'botPaint':
+        paintOnlineBots(m);
         break;
       case 'collect':
         if (G.phase === 'check' || G.phase === 'hide') sendFigure('figure');
@@ -2031,21 +2077,27 @@
       const tags = [];
       if (p.id === r.hostId) tags.push('anfitrión');
       if (p.id === G.me) tags.push('tú');
+      if (p.bot) tags.push('CPU · ' + Bots.profile(p.botLevel).name);
       if (!p.connected) tags.push('desconectado');
       if (tags.length) info.append(el('div', 'tag', tags.join(' · ')));
       chip.append(av, info);
       box.append(chip);
     }
     const isHost = r.hostId === G.me;
-    // un servidor sin galerías (anterior a las obras de arte) no envía «gallery»: entonces no la ofrecemos
-    const gallery = r.settings.gallery || 'clasico';
-    $('#lobby-gallery').hidden = !('gallery' in r.settings);
-    showGalleryOptions($('#lobby-settings'), gallery);
-    if (isArt(gallery)) prefetchArt();
+    updateCollectionTimes($('#lobby-settings'), r.settings.collection);
+    const humanCount = r.players.filter((p) => !p.bot).length;
+    const botCapacity = window.HideRoom.MAX_PLAYERS - humanCount;
     $$('[data-room]').forEach((seg) => {
-      seg.classList.toggle('locked', !isHost);
-      markSeg(seg, r.settings[seg.dataset.room]);
+      const key = seg.dataset.room;
+      const disabled = !isHost || r.phase !== 'lobby' || (key === 'difficulty' && r.settings.collection === 1);
+      seg.classList.toggle('locked', disabled);
+      seg.querySelectorAll('button').forEach((b) => {
+        b.classList.toggle('on', Number(b.dataset.v) === r.settings[key]);
+        b.disabled = disabled || (key === 'bots' && Number(b.dataset.v) > botCapacity);
+      });
     });
+    $('#room-bot-help').textContent = `Hasta ${botCapacity} CPU con ${humanCount} ${humanCount === 1 ? 'persona' : 'personas'} en la sala. Máximo ${window.HideRoom.MAX_PLAYERS} participantes.`;
+    $('#room-paint-help').textContent = paintingHelp(r.settings.collection, r.settings.difficulty);
     const count = r.players.filter((p) => p.connected).length;
     const start = $('#btn-lobby-start');
     start.hidden = !isHost;
@@ -2069,6 +2121,16 @@
   }
 
   function leaveGame() {
+    phaseRevision++;
+    if (confirmCancel) confirmCancel();
+    cancelBotPainting();
+    onlineBotPhase = null;
+    // Al volver al menú desaparece el control: salimos también de pantalla completa.
+    const fullscreen = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fullscreen === document.documentElement) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+    }
     if (G.link) G.link.close();
     G.link = null;
     setBusy(false);
@@ -2086,40 +2148,68 @@
     G.seek = null;
     G.figs = {};
     G.painting = null;
-    G.pendingPhase = null;
     G.phaseMsg = null;
+    G.results = null;
+    G.stroke = null;
     action = null;
     pointers.clear();
     closePopovers();
-    if (confirmCancel) confirmCancel();
-    history.replaceState(history.state, '', location.pathname);
     renderMenuBackground();
     showScreen('scr-menu');
+    BackGuard.release();
   }
 
-  const { galleryName, galleryOf } = window.HideRoom;
-  const cpuOpts = Object.assign({ bots: 1, diff: 'normal', rounds: 3, hideTime: 90, gallery: 'clasico' }, store.get('cpu', {}));
-  // desde un archivo local el navegador no deja leer los píxeles de las imágenes: solo cuadros clásicos
-  const artAvailable = location.protocol !== 'file:';
-  cpuOpts.gallery = artAvailable ? galleryName(cpuOpts.gallery) : 'clasico';
-  if (!galleryOf(cpuOpts.gallery).hideTime.includes(cpuOpts.hideTime)) cpuOpts.hideTime = galleryOf(cpuOpts.gallery).hideDefault;
-
-  /** Muestra solo las opciones (botones y notas con data-gal) de la galería elegida. */
-  function showGalleryOptions(box, gallery) {
-    box.querySelectorAll('[data-gal]').forEach((e) => { e.hidden = !e.dataset.gal.split(' ').includes(gallery); });
+  const savedCpu = store.get('cpu', {}) || {};
+  const cpuOpts = Object.assign({ bots: 1, diff: 'normal', rounds: 3, hideTime: 90, seekTime: 30, collection: 0, difficulty: 1 }, savedCpu);
+  // Conserva las preferencias guardadas por la versión publicada de las galerías.
+  if (savedCpu.collection == null && savedCpu.gallery === 'arte') cpuOpts.collection = 1;
+  let cpuArtDeck = store.get('artDeck', null);
+  for (const [key, fallback] of Object.entries({ bots: 1, rounds: 3, collection: 0, difficulty: 1 })) {
+    const choices = key === 'bots' ? [1, 2, 3, 4, 5, 6, 7] : window.HideRoom.LIMITS[key];
+    if (!choices.includes(cpuOpts[key])) cpuOpts[key] = fallback;
   }
+  const cpuCollection = collectionOf(cpuOpts.collection);
+  if (!cpuCollection.hideTime.includes(cpuOpts.hideTime)) cpuOpts.hideTime = cpuCollection.hideDefault;
+  if (savedCpu.seekTime == null || !cpuCollection.seekTime.includes(cpuOpts.seekTime)) cpuOpts.seekTime = cpuCollection.seekDefault;
+  cpuOpts.diff = Bots.profile(cpuOpts.diff).key;
 
   function markSeg(seg, value) {
     seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === String(value)));
   }
 
+  function updateCollectionTimes(container, collection) {
+    const info = collectionOf(collection);
+    for (const key of ['hideTime', 'seekTime']) {
+      container.querySelectorAll(`[data-cpu="${key}"] button, [data-room="${key}"] button`).forEach((b) => {
+        b.hidden = !info[key].includes(Number(b.dataset.v));
+      });
+    }
+  }
+
+  function paintingHelp(collection, difficulty) {
+    if (collection === 1) return HumanArt.works.length + ' obras de dominio público, con autor y fuente. Se recortan para el tablero; conservan sus colores y texturas originales.';
+    return [
+      'Zonas amplias de color: empieza practicando la posición y el pincel.',
+      'Trazos que cruzan la figura: combina el color del fondo con sus detalles.',
+      'Tramas más densas y contrastadas: usa pinceles pequeños y elige colores del cuadro.',
+    ][difficulty ?? 1];
+  }
+
+  function updateCpuPaintingOptions() {
+    updateCollectionTimes($('#scr-cpu'), cpuOpts.collection);
+    markSeg($('[data-cpu="hideTime"]'), cpuOpts.hideTime);
+    markSeg($('[data-cpu="seekTime"]'), cpuOpts.seekTime);
+    $$('[data-cpu="difficulty"] button').forEach((b) => { b.disabled = cpuOpts.collection === 1; });
+    $('#cpu-paint-help').textContent = paintingHelp(cpuOpts.collection, cpuOpts.difficulty);
+  }
+
   function startCpu() {
+    if (G.screen !== 'scr-cpu' || G.mode === 'cpu') return;
     if (G.link) leaveGame();
     store.set('cpu', cpuOpts);
-    const gallery = galleryOf(cpuOpts.gallery);
-    if (isArt(cpuOpts.gallery)) prefetchArt();
     const room = new Room('CPU', {
-      settings: { rounds: cpuOpts.rounds, hideTime: cpuOpts.hideTime, seekTime: gallery.seekDefault, gallery: cpuOpts.gallery },
+      settings: { rounds: cpuOpts.rounds, hideTime: cpuOpts.hideTime, seekTime: cpuOpts.seekTime, difficulty: cpuOpts.difficulty, collection: cpuOpts.collection, bots: 0 },
+      deckState: cpuOpts.collection === 1 ? store.get('artDeck', cpuArtDeck) : undefined,
     });
     G.mode = 'cpu';
     G.localRoom = room;
@@ -2617,85 +2707,58 @@
     },
   };
 
-  // ---------------------------------------------------------------- pantalla completa
-  const iOS = /iP(hone|od|ad)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  const standalone = navigator.standalone === true || window.matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
-
-  const Fullscreen = {
-    get supported() { return !!(document.fullscreenEnabled || document.webkitFullscreenEnabled); },
-    get active() { return !!(document.fullscreenElement || document.webkitFullscreenElement); },
-    toggle() {
-      if (!this.supported) {
-        // el iPhone no deja poner una página a pantalla completa, pero sí abrirla como app desde el inicio
-        if (iOS && !standalone) toast('Para jugar a pantalla completa en iPhone: Compartir → «Añadir a pantalla de inicio» y ábrelo desde allí.');
-        return;
-      }
-      const d = document;
-      try {
-        const r = this.active
-          ? (d.exitFullscreen || d.webkitExitFullscreen).call(d)
-          : (d.documentElement.requestFullscreen || d.documentElement.webkitRequestFullscreen).call(d.documentElement, { navigationUI: 'hide' });
-        if (r && r.catch) r.catch(() => toast('No se pudo cambiar a pantalla completa', 'bad'));
-      } catch {
-        toast('No se pudo cambiar a pantalla completa', 'bad');
-      }
-    },
-    sync() { document.body.classList.toggle('is-full', Fullscreen.active); },
-  };
-
-  // ---------------------------------------------------------------- botón «atrás»
-  // Fuera del menú dejamos una entrada de historial «de guarda». Así, «atrás» (o el gesto de volver del móvil)
-  // vuelve al menú, o pide confirmación si estás en una partida, en lugar de sacarte de la página.
+  // ---------------------------------------------------------------- navegación
+  // Una sola entrada propia permite volver al menú; al salir se consume, sin acumular guardas.
   const BackGuard = {
-    armed: false,
+    armed: !!history.state?.eepGuard,
+    releasing: false,
     arm() {
-      if (this.armed) return;
+      if (this.armed || this.releasing) return;
       try {
-        // en una sala, la dirección conserva el código para poder volver a entrar si se recarga
         history.pushState({ eepGuard: true }, '', G.mode === 'online' && G.code ? '?sala=' + G.code : location.href);
         this.armed = true;
       } catch { /* sin historial disponible */ }
     },
+    release() {
+      if (this.armed && history.state?.eepGuard) {
+        this.armed = false;
+        this.releasing = true;
+        history.back();
+      } else {
+        history.replaceState(null, '', location.pathname);
+      }
+    },
   };
 
-  async function onBack() {
-    BackGuard.armed = false;
-    if (confirmCancel) { BackGuard.arm(); confirmCancel(); return; }
-    if (!$('#howto').hidden || !$('#welcome').hidden) {
-      $('#howto').hidden = true;
-      if (!$('#welcome').hidden) { $('#welcome').hidden = true; store.set('tutorialSeen', true); }
+  window.addEventListener('popstate', async (e) => {
+    if (BackGuard.releasing) {
+      BackGuard.releasing = false;
+      history.replaceState(null, '', location.pathname);
       if (G.screen !== 'scr-menu') BackGuard.arm();
       return;
     }
-    switch (G.screen) {
-      case 'scr-menu':
-        history.back(); // ya estabas en el menú: ahora sí, «atrás» sale del juego
-        return;
-      case 'scr-game': case 'scr-lobby': case 'scr-final': {
-        BackGuard.arm();
-        if (G.mode === 'tutorial') {
-          if (await confirmBox('¿Salir del tutorial?')) Tutorial.finish('menu');
-        } else if (G.screen === 'scr-final' && G.mode !== 'online') {
-          leaveGame();
-        } else if (await confirmBox(G.screen === 'scr-game' ? '¿Salir de la partida?' : '¿Salir de la sala?')) {
-          leaveGame();
-        }
-        return;
-      }
-      default:
-        leaveGame(); // configurar CPU o entrar en línea: volvemos al menú
+    if (e.state?.eepGuard) { BackGuard.armed = true; return; }
+    if (!BackGuard.armed) return;
+    BackGuard.armed = false;
+    if (confirmCancel) { confirmCancel(); BackGuard.arm(); return; }
+    if (!$('#howto').hidden || !$('#welcome').hidden) {
+      $('#howto').hidden = true;
+      if (!$('#welcome').hidden) { $('#welcome').hidden = true; store.set('tutorialSeen', true); }
+      BackGuard.arm();
+      return;
     }
-  }
-
-  window.addEventListener('popstate', (e) => {
-    if (e.state && e.state.eepGuard) { BackGuard.armed = true; return; } // «adelante» hasta la guarda
-    onBack();
+    if (G.screen === 'scr-menu') return;
+    if (G.mode === 'tutorial') {
+      BackGuard.arm();
+      if (await confirmBox('¿Salir del tutorial?')) Tutorial.finish('menu');
+    } else if (G.screen === 'scr-game' || (G.mode === 'online' && ['scr-lobby', 'scr-final'].includes(G.screen))) {
+      BackGuard.arm();
+      if (await confirmBox(G.screen === 'scr-game' ? '¿Salir de la partida?' : '¿Salir de la sala?')) leaveGame();
+    } else leaveGame();
   });
 
-  // Recargar o cerrar la pestaña en mitad de una partida pide confirmación (en los navegadores que lo permiten).
   window.addEventListener('beforeunload', (e) => {
-    const playing = (G.mode === 'online' && G.me) || (G.mode === 'cpu' && G.screen === 'scr-game');
-    if (!playing) return;
+    if (!((G.mode === 'online' && G.me) || (G.mode === 'cpu' && G.screen === 'scr-game'))) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -2728,11 +2791,7 @@
     renderSwatches($('#recent'), []);
     renderMenuBackground();
 
-    $('#btn-cpu').onclick = () => {
-      Sound.unlock();
-      showScreen('scr-cpu');
-      if (isArt(cpuOpts.gallery)) prefetchArt();
-    };
+    $('#btn-cpu').onclick = () => { Sound.unlock(); showScreen('scr-cpu'); };
     $('#btn-online').onclick = () => {
       Sound.unlock();
       const offline = location.protocol === 'file:';
@@ -2758,36 +2817,26 @@
     $('#btn-howto').onclick = () => { $('#howto').hidden = false; };
     $('#btn-howto-close').onclick = () => { $('#howto').hidden = true; };
     $('#btn-howto-tutorial').onclick = () => { $('#howto').hidden = true; Sound.unlock(); Tutorial.start(); };
-    $('#btn-tutorial').onclick = () => { Sound.unlock(); Tutorial.start(); };
     $('#btn-welcome-yes').onclick = () => { $('#welcome').hidden = true; Sound.unlock(); Tutorial.start(); };
     $('#btn-welcome-no').onclick = () => { $('#welcome').hidden = true; store.set('tutorialSeen', true); };
     $('#howto').addEventListener('click', (e) => { if (e.target.id === 'howto') $('#howto').hidden = true; });
     $$('[data-back]').forEach((b) => { b.onclick = () => leaveGame(); });
 
     bindSeg('[data-cpu]', (k) => cpuOpts[k], (key, val, seg) => {
-      if (key === 'gallery') {
-        if (isArt(val) && !artAvailable) return;
-        cpuOpts.gallery = val;
-        // cada galería tiene sus tiempos: si el elegido no existe en ella, usamos el suyo por defecto
-        const g = galleryOf(val);
-        if (!g.hideTime.includes(cpuOpts.hideTime)) cpuOpts.hideTime = g.hideDefault;
-        markSeg($('[data-cpu="hideTime"]'), cpuOpts.hideTime);
-        showGalleryOptions($('#scr-cpu'), val);
-        if (isArt(val)) prefetchArt();
-      } else {
-        cpuOpts[key] = key === 'diff' ? val : Number(val);
+      cpuOpts[key] = key === 'diff' ? val : Number(val);
+      if (key === 'collection') {
+        const info = collectionOf(cpuOpts.collection);
+        cpuOpts.hideTime = info.hideDefault;
+        cpuOpts.seekTime = info.seekDefault;
       }
       markSeg(seg, val);
       store.set('cpu', cpuOpts);
+      updateCpuPaintingOptions();
     });
-    showGalleryOptions($('#scr-cpu'), cpuOpts.gallery);
-    if (!artAvailable) {
-      $('[data-cpu="gallery"] [data-v="arte"]').disabled = true;
-      $('#cpu-art-file').hidden = false;
-    }
+    updateCpuPaintingOptions();
     bindSeg('[data-room]', () => null, (key, val) => {
       if (!G.room || G.room.hostId !== G.me || !G.link) return;
-      G.link.send({ t: 'settings', [key]: key === 'gallery' ? val : Number(val) });
+      G.link.send({ t: 'settings', [key]: Number(val) });
     });
 
     $('#btn-cpu-start').onclick = () => { Sound.unlock(); startCpu(); };
@@ -2817,22 +2866,53 @@
     $('#btn-final-lobby').onclick = () => { if (G.link) G.link.send({ t: 'lobby' }); };
     $('#btn-final-menu').onclick = () => leaveGame();
 
-    $('#btn-hurry').onclick = async () => {
-      if (!(await confirmBox('¿Dar a todos 30 segundos para terminar de esconderse?', '¡30 segundos!', 'Todavía no'))) return;
-      if (G.link && G.phase === 'hide' && G.phaseEnd == null) G.link.send({ t: 'hurry' });
-    };
-    // botones de pantalla completa: ocultos donde no se puede (salvo en iPhone, que explica cómo hacerlo)
-    for (const b of [$('#btn-full'), $('#btn-full-menu')]) {
-      b.hidden = !(Fullscreen.supported || (iOS && !standalone));
-      b.onclick = () => Fullscreen.toggle();
-    }
-    document.addEventListener('fullscreenchange', Fullscreen.sync);
-    document.addEventListener('webkitfullscreenchange', Fullscreen.sync);
-
     $('#btn-mute').onclick = () => {
       const m = Sound.toggle();
       document.body.classList.toggle('muted', m);
     };
+    $('#btn-hurry').onclick = async () => {
+      if (!(await confirmBox('¿Dar a todos 30 segundos para terminar de esconderse?', '¡30 segundos!', 'Todavía no'))) return;
+      if (G.link && G.room?.hostId === G.me && G.phase === 'hide' && G.phaseEnd == null) G.link.send({ t: 'hurry' });
+    };
+    const fullscreenButtons = [$('#btn-fullscreen'), $('#btn-fullscreen-menu')];
+    const fullscreenRoot = document.documentElement;
+    const requestFullscreen = fullscreenRoot.requestFullscreen || fullscreenRoot.webkitRequestFullscreen;
+    const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
+    const fullscreenElement = () => document.fullscreenElement || document.webkitFullscreenElement;
+    const supported = !!(requestFullscreen && exitFullscreen && (document.fullscreenEnabled || document.webkitFullscreenEnabled));
+    const iOS = /iP(hone|od|ad)/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const standalone = navigator.standalone === true || window.matchMedia('(display-mode: standalone), (display-mode: fullscreen)').matches;
+    const syncFullscreen = () => {
+      const active = !!fullscreenElement();
+      document.body.classList.toggle('is-full', active);
+      for (const button of fullscreenButtons) {
+        button.hidden = !(supported || (iOS && !standalone));
+        const label = supported ? (active ? 'Salir de pantalla completa' : 'Entrar en pantalla completa') : 'Cómo jugar a pantalla completa en iPhone';
+        button.setAttribute('aria-pressed', String(active));
+        button.setAttribute('aria-label', label);
+        button.title = label + (supported ? ' (F)' : '');
+      }
+      if (G.screen === 'scr-game') requestAnimationFrame(layout);
+    };
+    for (const button of fullscreenButtons) button.onclick = async () => {
+      if (!supported) {
+        toast('Para jugar a pantalla completa en iPhone: Compartir → «Añadir a pantalla de inicio» y ábrelo desde allí.');
+        return;
+      }
+      fullscreenButtons.forEach((b) => { b.disabled = true; });
+      try {
+        if (fullscreenElement()) await exitFullscreen.call(document);
+        else await requestFullscreen.call(fullscreenRoot, { navigationUI: 'hide' });
+      } catch {
+        toast('No se pudo cambiar la pantalla completa. Inténtalo de nuevo.', 'bad');
+      } finally {
+        fullscreenButtons.forEach((b) => { b.disabled = false; });
+        syncFullscreen();
+      }
+    };
+    document.addEventListener('fullscreenchange', syncFullscreen);
+    document.addEventListener('webkitfullscreenchange', syncFullscreen);
+    syncFullscreen();
     $('#btn-exit').onclick = async () => {
       if (G.mode === 'tutorial') {
         if (await confirmBox('¿Salir del tutorial?')) Tutorial.finish('menu');
@@ -2891,6 +2971,7 @@
       $('#welcome').hidden = false;
     }
     showScreen(G.screen === 'scr-online' ? 'scr-online' : G.screen);
+    if (G.screen === 'scr-menu' && BackGuard.armed) BackGuard.release();
     requestAnimationFrame(loop);
   }
 

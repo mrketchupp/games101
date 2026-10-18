@@ -16,16 +16,16 @@ El modo en línea utiliza el servidor de salas publicado en Cloudflare y configu
 2. Pulsa **Copiar enlace** y lo envía a sus amigos.
 3. Cada invitado abre el enlace, escribe su nombre y pulsa **Unirse**. Si recibe solo el código de
    4 letras, puede escribirlo en **Multijugador en línea** y pulsar **Unirse**.
-4. Cuando haya **2 a 8 personas** en la sala, el anfitrión pulsa **¡Empezar!**.
+4. El anfitrión puede añadir **CPU** y elegir su dificultad. Cuando haya **2 a 8 participantes**,
+   incluyendo al menos una persona, pulsa **¡Empezar!**.
 
 No necesitas cuenta, instalar nada ni estar en la misma red. Puedes saltar el tutorial y repetirlo
-cuando quieras con **Tutorial** en el menú. Si aparece un aviso de conexión, espera unos segundos y pulsa
+cuando quieras con **¿Cómo se juega? → Tutorial interactivo** en el menú. Si aparece un aviso de conexión, espera unos segundos y pulsa
 **Reintentar**; también puedes jugar contra la CPU.
 
 ## Cómo se juega
 
-1. **¡Prepárense!**: aparece un cuadro nuevo. Hay dos galerías: **Clásicos** (10 estilos generados por código: ondas,
-   campamento, atardecer, Bauhaus…) y **Obras de arte** (12 cuadros famosos de museo).
+1. **¡Prepárense!**: aparece un cuadro nuevo (hay 10 estilos generados por código: ondas, campamento, atardecer, Bauhaus…).
 2. **Escóndete**: arrastra tu figura, elige una **pose** y pulsa **Bloquear**. Píntala con el pincel; con
    **Elegir color** copias cualquier color del cuadro. Pulsa **¡Listo!** cuando termines.
 3. **Comprobando tu mezcla**: el juego calcula qué porcentaje de tu figura se confunde con el cuadro.
@@ -34,16 +34,11 @@ cuando quieras con **Tutorial** en el menú. Si aparece un aviso de conexión, e
    - Por encontrar a alguien: 100 a 200 puntos, según lo rápido que lo hagas.
    - Por cada rival que no te encuentra: 150 puntos. Si te encuentra tarde, también sumas algo.
 
-Controles: rueda o pellizco para hacer zoom; Espacio + arrastrar, clic derecho o dos dedos para mover la vista
-(al buscar basta con arrastrar un dedo); `Ctrl+Z` para deshacer; `1`–`5` o `[` `]` para el tamaño del pincel; `I` para
-elegir color, `L` para bloquear, `P` para las poses y `F` para la pantalla completa.
-
-- **Pantalla completa**: botón con las cuatro esquinas (en el menú y en la partida) o tecla `F`. En iPhone el navegador no
-  lo permite: el botón explica cómo añadir el juego a la pantalla de inicio, que lo abre sin barras.
-- **Botón «atrás»** (o el gesto de volver del móvil): dentro de una partida o sala pide confirmación en lugar de sacarte
-  del juego; en las pantallas de opciones vuelve al menú. Recargar o cerrar la pestaña en plena partida también avisa.
-- **Al buscar en el móvil**: un toque marca aunque el dedo se mueva un poco o haya otro dedo apoyado en la pantalla
-  (por ejemplo, el pulgar que sujeta el teléfono), y el pellizco ya no amplía la página entera.
+Controles: rueda o pellizco para hacer zoom; Espacio + arrastrar, clic derecho o dos dedos para mover la vista;
+`Ctrl+Z` para deshacer; `1`–`5` o `[` `]` para el tamaño del pincel; `I` para elegir color, `L` para bloquear y `P` para las poses.
+El botón de las cuatro esquinas, junto al sonido, permite entrar y salir de pantalla completa.
+En ordenador también puedes usar `F` y salir con `Esc`. El botón aparece en los navegadores que admiten esta función.
+Al buscar, arrastra con un dedo para mover la vista y toca sin arrastrar para intentar encontrar una figura.
 
 ## Modos
 
@@ -51,16 +46,72 @@ elegir color, `L` para bloquear, `P` para las poses y `F` para la pantalla compl
   de práctica sin reloj: mover la figura, elegir una pose, bloquearla, copiar colores, pintar, hacer zoom y,
   al final, buscarle a él (con pistas si hace falta). Cada paso avanza cuando lo haces de verdad y se puede saltar.
   Si llegaste con un enlace de invitación, al terminar te ofrece unirte a esa sala. Se puede repetir desde el
-  botón **Tutorial** del menú.
-- **Contra la CPU**: de 1 a 3 rivales controlados por el ordenador, con dificultad Fácil, Normal o Difícil.
+  botón **Tutorial interactivo** dentro de **¿Cómo se juega?**.
+- **Contra la CPU**: de 1 a 3 rivales controlados por el ordenador, con dificultad Fácil, Normal, Difícil o Experto.
   No necesita servidor: funciona también en GitHub Pages.
-- **Obras de arte**: galería que se elige en la partida contra la CPU o en la sala (lo decide el anfitrión). Son cuadros
-  reales con mucho detalle, así que el tiempo para esconderse es de **3, 5 o 10 minutos, o sin límite**, y el de buscar
-  llega hasta 2 minutos. Sin límite, la fase termina cuando todos pulsan **¡Listo!**; si alguien tarda demasiado, el
-  anfitrión puede pulsar **Últimos 30 s** para que todos tengan medio minuto más. En estos cuadros la mezcla da por bueno
-  un color que aparezca a 2 píxeles o menos, porque la textura del óleo cambia de un píxel a otro.
-- **Multijugador en línea**: de 2 a 8 jugadores por sala. Uno crea la sala y comparte el código de 4 letras
-  o el enlace (`?sala=ABCD`). En internet usa el servidor de salas de Cloudflare.
+- **Multijugador en línea**: de 2 a 8 participantes por sala, combinando personas y CPU. Uno crea la sala
+  y comparte el código de 4 letras o el enlace (`?sala=ABCD`). En internet usa el servidor de salas de Cloudflare.
+
+## Rivales CPU
+
+El nivel cambia tanto la manera de pintar como la búsqueda. Los niveles más altos comparan más
+posiciones y poses para esconderse, pintan con más precisión y buscan con mayor rapidez y acierto.
+Los rivales también cometen errores; el camuflaje de tu figura influye en cuánto tardan en encontrarla.
+
+| Nivel | Comportamiento |
+| --- | --- |
+| Fácil | Ocultación sencilla, pincel más grueso y búsqueda más lenta, con más fallos. |
+| Normal | Compara posiciones y combina una pintura y una búsqueda más cuidadosas. |
+| Difícil | Elige mejor el sitio, afina los detalles y encuentra más figuras. |
+| Experto | Busca más posiciones y poses, pinta con mayor precisión y reacciona antes, con margen de error. |
+
+En una sala, el anfitrión elige **Rivales CPU en la sala** y **Dificultad de las CPU** antes de empezar.
+Puedes jugar en línea con una sola persona y al menos una CPU, o añadir CPU a una partida entre amigos.
+Cada CPU ocupa una de las ocho plazas. Solo el anfitrión cambia estos ajustes; las CPU aparecen
+identificadas en la lista de participantes. Para dejar plazas a otros amigos, reduce las CPU en la sala
+antes de empezar.
+
+Estos ajustes son independientes del detalle de los patrones. Las CPU funcionan también en la
+colección de obras del mundo humano.
+
+## Dificultad del camuflaje
+
+Al configurar la partida puedes elegir el **detalle de los patrones**, tanto contra la CPU como en
+la sala multijugador (lo elige el anfitrión):
+
+- **Fácil**: los cuadros originales, con zonas amplias de color para practicar.
+- **Normal**: trazos que atraviesan las zonas planas y obligan a combinar colores. Es el valor inicial.
+- **Difícil**: trazos más densos y contrastados; conviene usar pinceles pequeños y elegir colores del cuadro.
+
+La dificultad de los rivales CPU se elige por separado. El tutorial conserva su cuadro sencillo.
+Todos los jugadores ven los mismos detalles; la configuración también se conserva al reconectar.
+
+## Obras del mundo humano
+
+En **Cuadros** puedes elegir esta colección en lugar de los patrones. Incluye **35 reproducciones**:
+24 del **Metropolitan Museum of Art**, ofrecidas bajo **CC0 1.0**, y 11 de **Wikimedia Commons**
+identificadas como de dominio público. Hay paisajes, retratos, escenas urbanas, bodegones,
+estampas japonesas, pintura china y miniaturas de India e Irán, junto a obras como *La noche estrellada*,
+*El beso* y *Las meninas*. La partida muestra el autor y un enlace a la ficha de procedencia.
+Los títulos oficiales, los registros de dominio público y las fuentes están en [los créditos](art/CREDITS.md).
+
+Las obras se recortan al tablero cuadrado y conservan sus colores y texturas. El selector de detalle
+de los patrones queda desactivado en esta colección; la dificultad de los rivales sigue disponible.
+Para pintar estas obras puedes elegir **3, 5 o 10 minutos, o Sin límite**. Sin límite, la fase termina
+cuando todos están listos; el anfitrión puede dar un último plazo con **Últimos 30 s**.
+El tiempo base de búsqueda admite de 30 segundos a 2 minutos y se amplía según el número de rivales.
+Al medir la mezcla se acepta un color cercano hasta dos píxeles en la obra, para que la textura
+de una pincelada no exija acertar exactamente en un píxel.
+Cada colección se recorre sin repetir obras hasta agotarla, también entre partidas consecutivas
+en una misma sala. En el modo CPU, el navegador guarda las obras pendientes para continuar
+al volver al menú o recargar la página. El primer cuadro de un ciclo tampoco repite el último
+del anterior.
+
+Las imágenes están incluidas en el juego y en la publicación estática. Se carga la obra de cada
+ronda cuando hace falta, sin descargar toda la colección al empezar ni consultar al museo.
+El [comando de descarga documentado en los créditos](art/CREDITS.md#descargar-y-verificar-las-imágenes)
+permite volver a obtener y verificar los originales. Si una imagen no carga, la partida muestra un
+aviso y permite volver a intentarlo o elegir Patrones.
 
 ## Multijugador
 
@@ -69,7 +120,7 @@ con **Durable Objects con SQLite** para las salas. El cliente lee `window.EEP_CO
 `config.js`, que se carga antes de `game.js`. Debe apuntar al dominio real del Worker, con `wss://` y la
 ruta `/escondidas-en-pintura/ws`. Si el valor está vacío, busca el servidor junto al juego para uso local.
 
-En Cloudflare, cada sala guarda una copia de su estado y una alarma con el plazo de la fase para poder
+En Cloudflare, cada sala guarda una copia de su estado y una alarma con el próximo plazo de la fase o de las CPU para poder
 restaurar la partida tras una hibernación o un reinicio del proceso. Si desaparece una conexión, ese
 jugador pasa a estar desconectado. Las salas se eliminan tras **2 minutos sin personas conectadas**.
 Si el código ya no existe, crea otra sala y comparte el nuevo enlace.
@@ -86,6 +137,9 @@ El segundo comando inicia el entorno local de Wrangler; el tercero publica las s
 Cloudflare autorizada. El cliente se publica mediante [el flujo de GitHub Pages](../.github/workflows/pages.yml),
 que prepara los archivos con `deno task build:pages`. Los pasos de autenticación, configuración y
 publicación están en el [README de la colección](../README.md#publicarlo-en-internet).
+El Worker se publica primero; el flujo de Pages comprueba su compatibilidad antes de publicar el cliente.
+Tras esta actualización hay que recargar el juego. Las salas de obras que ya estaban en partida con
+la galería anterior deben recrearse para evitar mezclar imágenes e índices de catálogos distintos.
 
 Se requiere **Workers Free** para mantener el despliegue gratuito: superar sus cuotas hace fallar las
 operaciones afectadas. En **Workers Paid**, el uso puede generar cargos. Consulta
@@ -108,30 +162,9 @@ local viven en memoria: si Deno se reinicia, esas partidas en curso se pierden.
 | `room.js` | Reglas y fases de la partida. Lo comparten el servidor y el modo CPU, así que las reglas son las mismas en los dos modos. |
 | `multiplayer.ts` | Salas en línea por WebSocket (lo usa `../server.ts`). |
 | `paintings.js` | Los 10 cuadros generados por código (con la misma semilla, todos ven el mismo cuadro). |
-| `artworks.js`, `obras/` | La galería «Obras de arte»: nombres, autores y las 12 imágenes (WebP de 800 × 800, sRGB). |
+| `artworks.js`, `art/`, `obras/` | Catálogo de 35 obras, imágenes locales y créditos de las fuentes. |
+| `bot-ai.js` | Perfiles de dificultad y decisiones reproducibles de las CPU, compartidos por el cliente y el servidor. |
 | `figure.js` | La figura de bloques y sus 10 poses. |
 | `game.js` | Interfaz, dibujo, zoom, pintura, búsqueda, bots, tutorial y conexión. |
 | `config.js` | Dirección pública del servidor WebSocket; vacía para usar el servidor junto al juego. |
 | `index.html`, `style.css` | Pantallas y estilos. |
-
-## Créditos de las obras de arte
-
-Todas son de dominio público y proceden de Wikimedia Commons. Se usan recortes cuadrados reducidos a 800 × 800 píxeles.
-
-| Obra | Autor | Origen |
-| --- | --- | --- |
-| La noche estrellada (1889) | Vincent van Gogh | [Commons](https://commons.wikimedia.org/wiki/File:Van_Gogh_-_Starry_Night_-_Google_Art_Project.jpg) |
-| La gran ola de Kanagawa (h. 1831) | Katsushika Hokusai | [Commons](https://commons.wikimedia.org/wiki/File:Tsunami_by_hokusai_19th_century.jpg) |
-| Juegos de niños (1560) | Pieter Brueghel el Viejo | [Commons](https://commons.wikimedia.org/wiki/File:Pieter_Bruegel_the_Elder_-_Children%E2%80%99s_Games_-_Google_Art_Project.jpg) |
-| El beso (1907–1908) | Gustav Klimt | [Commons](https://commons.wikimedia.org/wiki/File:The_Kiss_-_Gustav_Klimt_-_Google_Cultural_Institute.jpg) |
-| Los girasoles (1888) | Vincent van Gogh | [Commons](https://commons.wikimedia.org/wiki/File:Vincent_Willem_van_Gogh_127.jpg) |
-| Tarde de domingo en la Grande Jatte (1884–1886) | Georges Seurat | [Commons](https://commons.wikimedia.org/wiki/File:A_Sunday_on_La_Grande_Jatte,_Georges_Seurat,_1884.jpg) |
-| El jardín de las delicias, tabla central (h. 1500) | El Bosco | [Commons](https://commons.wikimedia.org/wiki/File:The_Garden_of_earthly_delights.jpg) |
-| Cazadores en la nieve (1565) | Pieter Brueghel el Viejo | [Commons](https://commons.wikimedia.org/wiki/File:Pieter_Bruegel_the_Elder_-_Hunters_in_the_Snow_(Winter)_-_Google_Art_Project.jpg) |
-| Vertumno (1591) | Giuseppe Arcimboldo | [Commons](https://commons.wikimedia.org/wiki/File:Vertumnus_%C3%A5rstidernas_gud_m%C3%A5lad_av_Giuseppe_Arcimboldo_1591_-_Skoklosters_slott_-_91503.tiff) |
-| Los proverbios flamencos (1559) | Pieter Brueghel el Viejo | [Commons](https://commons.wikimedia.org/wiki/File:Pieter_Brueghel_the_Elder_-_The_Dutch_Proverbs_-_Google_Art_Project.jpg) |
-| Las meninas (1656) | Diego Velázquez | [Commons](https://commons.wikimedia.org/wiki/File:Las_Meninas,_by_Diego_Vel%C3%A1zquez,_from_Prado_in_Google_Earth.jpg) |
-| Impresión, sol naciente (1872) | Claude Monet | [Commons](https://commons.wikimedia.org/wiki/File:Monet_-_Impression,_Sunrise.jpg) |
-
-Para añadir una obra: guarda su recorte en `obras/` (800 × 800, sRGB, sin perfil de color), añádela al final de la lista
-de `artworks.js`, sube `ART_COUNT` en `room.js` y vuelve a publicar el servidor de salas.

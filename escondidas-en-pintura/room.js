@@ -7,16 +7,22 @@
   'use strict';
 
   const PAINTING_COUNT = 10;
-  const ART_COUNT = 12; // obras de arte reales (artworks.js)
+  const ARTWORK_COUNT = root.HumanArt.works.length;
+  const PROTOCOL_VERSION = 2;
+  const CATALOG_VERSION = root.HumanArt.works.map((work) => work.id).join(',');
   const POSE_COUNT = 10;
   const MAX_PLAYERS = 8;
   const COLOR_COUNT = 8;
-  const DEFAULTS = { rounds: 3, hideTime: 120, seekTime: 30, gallery: 'clasico' };
-  const LIMITS = { rounds: [1, 2, 3, 5], hideTime: [60, 90, 120, 180], seekTime: [20, 30, 45, 60] };
-  // Cada galería tiene sus cuadros y sus tiempos. Un hideTime de 0 significa «sin límite para esconderse».
-  const GALLERIES = {
-    clasico: { count: PAINTING_COUNT, hideTime: LIMITS.hideTime, seekTime: LIMITS.seekTime, hideDefault: 120, seekDefault: 30 },
-    arte: { count: ART_COUNT, hideTime: [180, 300, 600, 0], seekTime: [30, 45, 60, 90, 120], hideDefault: 300, seekDefault: 60 },
+  const DEFAULTS = { rounds: 3, hideTime: 120, seekTime: 30, difficulty: 1, collection: 0, bots: 0, botLevel: 1 };
+  const LIMITS = {
+    rounds: [1, 2, 3, 5], hideTime: [60, 90, 120, 180, 300, 600, 0], seekTime: [20, 30, 45, 60, 90, 120],
+    difficulty: [0, 1, 2], collection: [0, 1],
+    bots: [0, 1, 2, 3, 4, 5, 6, 7], botLevel: [0, 1, 2, 3],
+  };
+  // Cada colección conserva sus tiempos; 0 permite pintar arte sin límite.
+  const COLLECTIONS = {
+    0: { count: PAINTING_COUNT, hideTime: [60, 90, 120, 180], seekTime: [20, 30, 45, 60], hideDefault: 120, seekDefault: 30 },
+    1: { count: ARTWORK_COUNT, hideTime: [180, 300, 600, 0], seekTime: [30, 45, 60, 90, 120], hideDefault: 300, seekDefault: 60 },
   };
   const MS = { prepare: 3500, checkMin: 2800, checkMax: 7000, seekGrace: 2500, results: 13000, hurry: 30000 };
   const MISS_PENALTY = 2; // segundos que suma cada toque fallido al buscar
@@ -26,6 +32,21 @@
   const now = () => Date.now();
   const randomId = () => Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10);
 
+  function collectionOf(value) {
+    return COLLECTIONS[LIMITS.collection.includes(value) ? value : DEFAULTS.collection];
+  }
+
+  function validSettings(settings) {
+    const result = Object.assign({}, DEFAULTS);
+    for (const key of Object.keys(LIMITS)) {
+      if (settings && LIMITS[key].includes(settings[key])) result[key] = settings[key];
+    }
+    const collection = collectionOf(result.collection);
+    if (!collection.hideTime.includes(settings?.hideTime)) result.hideTime = collection.hideDefault;
+    if (!collection.seekTime.includes(settings?.seekTime)) result.seekTime = collection.seekDefault;
+    return result;
+  }
+
   function cleanName(name) {
     return String(name == null ? '' : name)
       // deno-lint-ignore no-control-regex
@@ -33,15 +54,6 @@
       .replace(/\s+/g, ' ')
       .trim()
       .slice(0, 16);
-  }
-
-  /** Nombre válido de galería; las salas guardadas antes de las galerías son «clasico». */
-  function galleryName(name) {
-    return typeof name === 'string' && Object.hasOwn(GALLERIES, name) ? name : 'clasico';
-  }
-
-  function galleryOf(name) {
-    return GALLERIES[galleryName(name)];
   }
 
   function seekLimit(settings, participantCount) {
@@ -68,7 +80,8 @@
       this.code = code;
       this.players = [];
       this.hostId = null;
-      this.settings = Object.assign({}, DEFAULTS, opts.settings || {});
+      this.settings = validSettings(opts.settings);
+      this.legacyArtRoom = false;
       this.phase = 'lobby';
       this.round = 0;
       this.timer = null;
@@ -76,10 +89,19 @@
       this.deadline = 0;
       this.transition = null;
       this.phaseEndsAt = 0;
-      this.phaseMsg = { t: 'phase', phase: 'lobby', round: 0, rounds: this.settings.rounds };
+      this.phaseStartedAt = 0;
+      this.lastTickAt = 0;
+      this.botActions = [];
+      this.phaseMsg = {
+        t: 'phase', phase: 'lobby', round: 0, rounds: this.settings.rounds,
+        difficulty: this.settings.difficulty, collection: this.settings.collection,
+      };
       this.deck = [];
+      this.deckCollection = this.settings.collection;
+      this.deckCount = this.settings.collection === 1 ? ARTWORK_COUNT : PAINTING_COUNT;
+      this.lastPainting = null;
+      if (opts.deckState) this.loadDeck(opts.deckState);
       this.painting = 0;
-      this.gallery = 'clasico';
       this.seed = 0;
       this.figures = {};
       this.participants = [];
@@ -105,11 +127,135 @@
     clearTimer() { if (this.timer) { clearTimeout(this.timer); this.timer = null; } }
     destroy() { this.destroyed = true; this.clearTimer(); }
 
+    time() { return this._tickAt ?? Math.max(now(), this.phaseStartedAt, this.lastTickAt); }
+
+    /** Próximo trabajo de la sala, incluidos los movimientos de las CPU gestionadas. */
+    nextWakeAt() {
+      if (this.destroyed || !this.connectedHumans().length) return 0;
+      const phaseAt = this.deadline && this.transition ? this.deadline : Infinity;
+      const botAt = this.botActions.length ? this.botActions[0].at : Infinity;
+      const at = Math.min(phaseAt, botAt);
+      return Number.isFinite(at) ? at : 0;
+    }
+
+    reconcileBots() {
+      if (this.phase !== 'lobby') return;
+      const managed = this.players.filter((p) => p.managedBot);
+      const available = MAX_PLAYERS - this.players.length + managed.length;
+      const count = Math.min(this.settings.bots, available);
+      this.settings.bots = count;
+      const remove = new Set(managed.slice(count));
+      this.players = this.players.filter((p) => !remove.has(p));
+      for (let i = managed.length; i < count; i++) {
+        this.players.push({
+          id: 'p' + (++this.idCounter), pid: 'bot-' + root.crypto.randomUUID(),
+          name: this.uniqueName('CPU ' + (i + 1)), conn: null, connected: true,
+          bot: true, managedBot: true, botLevel: this.settings.botLevel,
+          score: 0, active: true, ready: false, color: this.freeColor(), botReadyAt: 0,
+        });
+      }
+      for (const p of this.players) if (p.managedBot) p.botLevel = this.settings.botLevel;
+    }
+
+    requestBotPaint(player = this.get(this.hostId)) {
+      if (!player || player.id !== this.hostId || player.bot || !player.connected ||
+          !['prepare', 'hide', 'check'].includes(this.phase)) return;
+      const bots = this.activeConnected().filter((p) => p.managedBot && !this.figures[p.id]).map((p) => ({
+        id: p.id, level: p.botLevel, seed: root.HideBots.seedFor(this.seed, p.id),
+      }));
+      if (bots.length) this.send(player, {
+        t: 'botPaint', round: this.round, seed: this.seed, painting: this.painting,
+        difficulty: this.settings.difficulty, collection: this.settings.collection, bots,
+      });
+    }
+
+    planBotActions() {
+      if (!['hide', 'seek'].includes(this.phase)) return;
+      for (const p of this.activeConnected().filter((p) => p.managedBot)) {
+        const seed = root.HideBots.seedFor(this.seed, p.id);
+        const base = { botId: p.id, round: this.round, seed: this.seed };
+        if (this.phase === 'hide') {
+          // Sin límite humano, las CPU siguen pintando con un plazo razonable.
+          const hideTime = this.settings.hideTime || collectionOf(this.settings.collection).hideDefault;
+          const requested = root.HideBots.readyDelay({ level: p.botLevel, hideTime, seed });
+          const delay = Math.max(0.1, Math.min(hideTime - 0.05, Number(requested) || 0.1));
+          p.botReadyAt = this.phaseStartedAt + delay * 1000;
+          this.botActions.push({ ...base, type: 'ready', at: p.botReadyAt });
+        } else if (this.participants.includes(p.id)) {
+          const targets = this.participants.filter((id) => id !== p.id).map((id) => ({
+            id, blend: this.figures[id].blend,
+          }));
+          const planned = root.HideBots.searchPlan({ level: p.botLevel, targets, limit: this.limit, seed });
+          const seen = new Set();
+          const plan = planned.filter((step) => {
+            if (!targets.some((target) => target.id === step.target) || seen.has(step.target) ||
+                !Number.isFinite(step.time) || step.time <= 0 || step.time >= this.limit) return false;
+            seen.add(step.target);
+            return true;
+          }).sort((a, b) => a.time - b.time);
+          for (const step of plan) this.botActions.push({
+            ...base, type: 'found', at: this.phaseStartedAt + step.time * 1000,
+            target: step.target, time: step.time,
+          });
+          const doneAt = plan.length === targets.length ? Math.min(this.limit, (plan.at(-1)?.time || 0) + 0.25) : this.limit;
+          this.botActions.push({ ...base, type: 'done', at: this.phaseStartedAt + doneAt * 1000, time: doneAt });
+        }
+      }
+      this.botActions.sort((a, b) => a.at - b.at);
+    }
+
+    runBotAction(action) {
+      const p = this.get(action.botId);
+      if (!p || !p.managedBot || !p.connected || !p.active || action.round !== this.round || action.seed !== this.seed) return;
+      if (action.type === 'ready' && this.phase === 'hide' && this.figures[p.id]) {
+        p.ready = true;
+        this.broadcastRoom();
+        this.checkAllReady();
+      } else if (action.type === 'found' && this.phase === 'seek') {
+        this.recordFind(p, action.target, action.time);
+      } else if (action.type === 'done' && this.phase === 'seek' && this.participants.includes(p.id)) {
+        if (!(p.id in this.done)) this.done[p.id] = action.time;
+        this.checkSeekDone();
+      }
+    }
+
+    recordFind(p, target, elapsed) {
+      if (!this.participants.includes(p.id) || !this.participants.includes(target) || target === p.id) return;
+      if (this.finds.some((f) => f.seeker === p.id && f.target === target)) return;
+      const time = Math.min(this.limit, Math.max(0, Number(elapsed) || 0));
+      this.finds.push({ seeker: p.id, target, time });
+      this.broadcast({ t: 'found', seeker: p.id, target, time });
+      const mine = this.finds.filter((f) => f.seeker === p.id).length;
+      if (mine >= this.participants.length - 1) this.done[p.id] = time;
+      this.checkSeekDone();
+    }
+
+    /** Solo el historial del mazo; permite reutilizarlo sin jugadores ni temporizadores. */
+    deckState() {
+      return {
+        deck: this.deck.slice(), deckCollection: this.deckCollection,
+        deckCount: this.deckCount, lastPainting: this.lastPainting,
+      };
+    }
+
+    loadDeck(state = {}) {
+      const count = this.settings.collection === 1 ? ARTWORK_COUNT : PAINTING_COUNT;
+      const sameCollection = state.deckCollection === this.settings.collection;
+      const validIndex = (value) => Number.isInteger(value) && value >= 0 && value < count;
+      const validDeck = sameCollection && state.deckCount === count && Array.isArray(state.deck) &&
+        state.deck.every(validIndex) && new Set(state.deck).size === state.deck.length &&
+        !state.deck.includes(state.lastPainting);
+      this.deck = validDeck ? state.deck.slice() : [];
+      this.deckCollection = this.settings.collection;
+      this.deckCount = count;
+      this.lastPainting = sameCollection && validIndex(state.lastPainting) ? state.lastPainting : null;
+    }
+
     /** Estado persistible: las conexiones y los temporizadores pertenecen al proceso. */
     snapshot() {
       const state = {};
       for (const key of Object.keys(this)) {
-        if (['timer', 'onEmpty', 'destroyed'].includes(key)) continue;
+        if (['timer', 'onEmpty', 'destroyed', '_tickAt'].includes(key)) continue;
         state[key] = key === 'players'
           ? this.players.map((p) => Object.assign({}, p, { conn: null }))
           : this[key];
@@ -124,8 +270,30 @@
         if (['timer', 'onEmpty', 'destroyed', 'externalTimers'].includes(key)) continue;
         if (Object.hasOwn(copy, key)) room[key] = copy[key];
       }
+      // Los PNG antiguos de arte usaban otros índices y recortes: no se pueden reinterpretar.
+      room.legacyArtRoom = !!room.legacyArtRoom || (
+        !Object.hasOwn(copy.settings || {}, 'collection') &&
+        [copy.gallery, copy.settings?.gallery, copy.phaseMsg?.gallery].includes('arte') &&
+        (room.inGame() || room.phase === 'final')
+      );
+      room.settings = validSettings(room.settings);
+      // Una partida antigua se pintó sin tramas: no cambiamos su fondo al reanudarla.
+      if (room.inGame() && !Object.hasOwn(copy.settings || {}, 'difficulty')) room.settings.difficulty = 0;
+      room.phaseMsg = Object.assign({}, room.phaseMsg, {
+        difficulty: room.settings.difficulty, collection: room.settings.collection,
+      });
+      // Antes del catálogo ampliado había 4 obras. Cambiar el mazo no altera la ronda actual.
+      const deckCollection = Object.hasOwn(copy, 'deckCollection') ? copy.deckCollection : 0;
+      const hasHistory = room.round > 0 || room.seed !== 0 || room.deck.length > 0;
+      room.loadDeck({
+        deck: room.deck, deckCollection,
+        deckCount: Object.hasOwn(copy, 'deckCount') ? copy.deckCount : (deckCollection === 1 ? 4 : PAINTING_COUNT),
+        lastPainting: Object.hasOwn(copy, 'lastPainting') ? copy.lastPainting : (hasHistory ? room.painting : null),
+      });
       room.players.forEach((p) => { p.conn = null; });
-      room.settings.gallery = galleryName(room.settings.gallery);
+      if (!Object.hasOwn(copy, 'phaseStartedAt')) {
+        room.phaseStartedAt = room.deadline && room.phaseMsg.duration ? room.deadline - room.phaseMsg.duration : 0;
+      }
       room.externalTimers = !!(opts.externalTimers ?? copy.externalTimers);
       room.phaseEndsAt = room.deadline;
       room.scheduleTimer();
@@ -135,36 +303,57 @@
     /** El servidor persistente llama tick(); CPU y servidor local usan el reloj normal. */
     scheduleTimer() {
       this.clearTimer();
-      if (this.destroyed || this.externalTimers || !this.deadline || !this.transition) return;
+      const wakeAt = this.nextWakeAt();
+      if (this.externalTimers || this._tickAt != null || !wakeAt) return;
       this.timer = setTimeout(() => {
         this.timer = null;
         if (!this.tick()) this.scheduleTimer();
-      }, Math.max(0, this.deadline - now()));
+      }, Math.max(0, wakeAt - now()));
     }
 
     tick(timestamp = now()) {
-      if (this.destroyed || !this.deadline || !this.transition || timestamp < this.deadline) return false;
-      const transition = this.transition;
+      if (!Number.isFinite(timestamp) || !this.nextWakeAt() || timestamp < this.nextWakeAt()) return false;
       this.clearTimer();
-      this.deadline = 0;
-      this.phaseEndsAt = 0;
-      this.transition = null;
-      switch (transition) {
-        case 'hide': this.setPhase('hide', this.settings.hideTime > 0 ? this.settings.hideTime * 1000 : null, 'endHide'); break;
-        case 'endHide': this.endHide(); break;
-        case 'finishCheck': this.finishCheck(); break;
-        case 'endSeek': this.endSeek(); break;
-        case 'nextRound': this.nextRound(); break;
-        case 'final': this.final(); break;
-        default: return false;
+      this.lastTickAt = Math.max(this.lastTickAt, timestamp);
+      let changed = false;
+      try {
+        for (let i = 0; i < 1000; i++) {
+          const at = this.nextWakeAt();
+          if (!at || at > timestamp) break;
+          this._tickAt = at;
+          const action = this.botActions[0];
+          if (action && action.at === at) {
+            this.botActions.shift();
+            this.runBotAction(action);
+          } else {
+            const transition = this.transition;
+            this.deadline = 0;
+            this.phaseEndsAt = 0;
+            this.transition = null;
+            switch (transition) {
+              case 'hide': this.setPhase('hide', this.settings.hideTime > 0 ? this.settings.hideTime * 1000 : null, 'endHide'); break;
+              case 'endHide': this.endHide(); break;
+              case 'finishCheck': this.finishCheck(); break;
+              case 'endSeek': this.endSeek(); break;
+              case 'nextRound': this.nextRound(); break;
+              case 'final': this.final(); break;
+              default: break;
+            }
+          }
+          changed = true;
+        }
+      } finally {
+        delete this._tickAt;
+        this.scheduleTimer();
       }
-      return true;
+      return changed;
     }
 
     publicPlayers() {
       return this.players.map((p) => ({
         id: p.id, name: p.name, score: p.score, connected: p.connected, bot: p.bot,
         ready: p.ready, active: p.active, color: p.color,
+        managedBot: !!p.managedBot, botLevel: p.botLevel,
       }));
     }
 
@@ -199,8 +388,10 @@
     // ---------- conexión ----------
     join(conn, info = {}) {
       if (this.destroyed) return { error: 'La sala ya no existe' };
+      if (this.legacyArtRoom) return { error: 'Esta sala pertenece a una versión anterior. Crea una sala nueva para continuar.' };
       const name = cleanName(info.name);
-      let p = info.pid ? this.players.find((x) => x.pid === info.pid) : null;
+      if (info.pid && this.players.some((x) => x.managedBot && x.pid === info.pid)) return { error: 'No puedes reconectar como una CPU.' };
+      let p = info.pid ? this.players.find((x) => !x.managedBot && x.pid === info.pid) : null;
       if (p) {
         p.conn = conn;
         p.connected = true;
@@ -210,29 +401,34 @@
           id: 'p' + (++this.idCounter),
           pid: info.pid || randomId(),
           name: this.uniqueName(name),
-          conn, connected: true, bot: !!info.bot, score: 0,
+          conn, connected: true, bot: !!info.bot, score: 0, botLevel: info.bot ? info.botLevel : undefined,
           active: !this.inGame(), ready: false, color: this.freeColor(),
         };
         this.players.push(p);
       }
+      this.reconcileBots();
       this.pickHost();
-      this.send(p, { t: 'welcome', you: p.id, code: this.code });
+      this.send(p, { t: 'welcome', you: p.id, code: this.code, protocol: PROTOCOL_VERSION, catalog: CATALOG_VERSION });
       this.broadcastRoom();
       this.sync(p);
+      this.scheduleTimer();
       return { player: p };
     }
 
     /** Envía al jugador el estado de la fase actual (al entrar o reconectar). */
     sync(p) {
       if (this.phase === 'lobby') return;
-      const msg = Object.assign({}, this.phaseMsg);
-      if (this.deadline) msg.duration = Math.max(0, this.deadline - now());
+      const msg = Object.assign({}, this.phaseMsg, {
+        difficulty: this.settings.difficulty, collection: this.settings.collection,
+      });
+      if (this.deadline) msg.duration = Math.max(0, this.deadline - this.time());
       if (this.phase === 'seek') {
-        const left = Math.max(0, this.deadline - now() - MS.seekGrace);
+        const left = Math.max(0, this.deadline - this.time() - MS.seekGrace);
         msg.limit = Math.min(this.limit * 1000, left);
         msg.resumed = true;
       }
       this.send(p, msg);
+      this.requestBotPaint(p);
     }
 
     disconnect(p, conn) {
@@ -243,9 +439,11 @@
       this.pickHost();
       this.broadcastRoom();
       if (this.connectedHumans().length === 0) {
+        this.clearTimer();
         if (this.onEmpty) this.onEmpty(this);
         return;
       }
+      this.requestBotPaint();
       if (this.inGame()) {
         if (this.activeConnected().length < 2) { this.toLobby('No quedan suficientes jugadores. Volviendo a la sala.'); return; }
         if (this.phase === 'hide') this.checkAllReady();
@@ -256,36 +454,53 @@
 
     // ---------- mensajes ----------
     handle(p, msg) {
-      if (!p || !msg || typeof msg !== 'object' || this.destroyed) return;
+      if (!p || this.get(p.id) !== p || !p.connected || p.managedBot || !msg || typeof msg !== 'object' || this.destroyed) return;
       const isHost = p.id === this.hostId;
       switch (msg.t) {
         case 'settings': {
-          if (!isHost || this.inGame()) return;
-          if (msg.gallery != null && galleryName(msg.gallery) === msg.gallery && msg.gallery !== galleryName(this.settings.gallery)) {
-            // cada galería empieza con sus propios tiempos
-            const g = GALLERIES[msg.gallery];
-            Object.assign(this.settings, { gallery: msg.gallery, hideTime: g.hideDefault, seekTime: g.seekDefault });
-            this.deck = [];
+          if (!isHost || this.phase !== 'lobby') return;
+          const previousCollection = this.settings.collection;
+          if (LIMITS.collection.includes(msg.collection) && msg.collection !== previousCollection) {
+            const collection = collectionOf(msg.collection);
+            Object.assign(this.settings, { collection: msg.collection, hideTime: collection.hideDefault, seekTime: collection.seekDefault });
           }
-          const g = galleryOf(this.settings.gallery);
-          const allowed = { rounds: LIMITS.rounds, hideTime: g.hideTime, seekTime: g.seekTime };
-          for (const key of Object.keys(allowed)) {
-            const v = Number(msg[key]);
-            if (msg[key] != null && allowed[key].includes(v)) this.settings[key] = v;
+          const collection = collectionOf(this.settings.collection);
+          for (const key of Object.keys(LIMITS)) {
+            const allowed = key === 'hideTime' || key === 'seekTime' ? collection[key] : LIMITS[key];
+            if (!allowed.includes(msg[key])) continue;
+            if (key === 'bots' && msg[key] > MAX_PLAYERS - this.players.filter((player) => !player.managedBot).length) {
+              this.send(p, { t: 'notice', msg: 'No hay plazas suficientes para tantas CPU (máximo 8 jugadores).' });
+              continue;
+            }
+            this.settings[key] = msg[key];
+          }
+          this.reconcileBots();
+          if (previousCollection !== this.settings.collection) {
+            this.loadDeck();
           }
           this.broadcastRoom();
           break;
         }
         case 'hurry':
-          // Sin límite para esconderse: el anfitrión puede dar a todos un último plazo.
-          if (!isHost || this.phase !== 'hide' || this.deadline) return;
-          this.deadline = now() + MS.hurry;
+          // Añadir el último plazo no reinicia figuras, semillas ni planes de CPU.
+          if (!isHost || this.phase !== 'hide' || this.settings.hideTime !== 0 || this.deadline) return;
+          this.deadline = this.time() + MS.hurry;
           this.phaseEndsAt = this.deadline;
           this.transition = 'endHide';
           this.phaseMsg = Object.assign({}, this.phaseMsg, { duration: MS.hurry, hurry: true });
           this.scheduleTimer();
           this.broadcast(this.phaseMsg);
           break;
+        case 'botFigure': {
+          if (!isHost || !['prepare', 'hide', 'check'].includes(this.phase) || msg.round !== this.round || msg.seed !== this.seed) return;
+          const bot = this.get(msg.botId);
+          if (!bot || !bot.managedBot || !bot.active || !bot.connected || this.figures[bot.id] || !this.storeFigure(bot, msg.fig)) return;
+          if (this.phase === 'check' || (this.phase === 'hide' && this.time() >= bot.botReadyAt)) bot.ready = true;
+          this.broadcastRoom();
+          if (this.phase === 'hide') this.checkAllReady();
+          if (this.phase === 'check') this.checkCollect();
+          break;
+        }
         case 'start':
           if (!isHost || this.inGame()) return;
           if (this.connected().length < 2) { this.send(p, { t: 'notice', msg: 'Hacen falta al menos 2 jugadores.' }); return; }
@@ -314,15 +529,7 @@
           break;
         case 'found': {
           if (this.phase !== 'seek') return;
-          const target = String(msg.target);
-          if (!this.participants.includes(p.id) || !this.participants.includes(target) || target === p.id) return;
-          if (this.finds.some((f) => f.seeker === p.id && f.target === target)) return;
-          const time = Math.min(this.limit, Math.max(0, Number(msg.time) || 0));
-          this.finds.push({ seeker: p.id, target, time });
-          this.broadcast({ t: 'found', seeker: p.id, target, time });
-          const mine = this.finds.filter((f) => f.seeker === p.id).length;
-          if (mine >= this.participants.length - 1) this.done[p.id] = time;
-          this.checkSeekDone();
+          this.recordFind(p, String(msg.target), msg.time);
           break;
         }
         case 'seekDone':
@@ -349,7 +556,10 @@
       const blend = Number(fig.blend);
       if (!Number.isFinite(x) || !Number.isFinite(y) || Math.abs(x) > 2000 || Math.abs(y) > 2000) return false;
       if (!(pose >= 0 && pose < POSE_COUNT)) return false;
-      if (typeof fig.img !== 'string' || !fig.img.startsWith('data:image/png;base64,') || fig.img.length > MAX_IMG) return false;
+      if (typeof fig.img !== 'string' || fig.img.length > MAX_IMG || !fig.img.startsWith('data:image/png;base64,iVBORw0KGgo')) return false;
+      const payload = fig.img.slice('data:image/png;base64,'.length);
+      const base64 = /^[A-Za-z0-9+/]+={0,2}$/.exec(payload);
+      if (payload.length % 4 !== 0 || !base64 || base64[0].length !== payload.length) return false;
       this.figures[p.id] = { x, y, pose, img: fig.img, blend: Number.isFinite(blend) ? Math.max(0, Math.min(100, blend)) : 0 };
       return true;
     }
@@ -357,23 +567,27 @@
     // ---------- flujo de la partida ----------
     setPhase(phase, ms, transition, extra) {
       this.clearTimer();
+      this.phaseStartedAt = this.time();
       this.phase = phase;
-      this.deadline = ms != null ? now() + ms : 0;
+      this.deadline = ms != null ? this.phaseStartedAt + ms : 0;
       this.phaseEndsAt = this.deadline;
       this.transition = ms != null ? transition : null;
-      this.scheduleTimer();
+      this.botActions = [];
       this.phaseMsg = Object.assign({
         t: 'phase', phase, round: this.round, rounds: this.settings.rounds,
-        painting: this.painting, gallery: this.gallery, seed: this.seed, duration: ms,
+        painting: this.painting, seed: this.seed, duration: ms,
+        difficulty: this.settings.difficulty, collection: this.settings.collection,
       }, extra || {});
+      this.planBotActions();
       this.broadcast(this.phaseMsg);
+      this.requestBotPaint();
+      this.scheduleTimer();
     }
 
     startGame() {
       this.players = this.players.filter((p) => p.connected);
       this.players.forEach((p) => { p.score = 0; });
       this.round = 0;
-      this.deck = [];
       this.nextRound();
     }
 
@@ -387,17 +601,20 @@
       this.finds = [];
       this.done = {};
       this.participants = [];
-      const gallery = galleryName(this.settings.gallery);
-      if (this.gallery !== gallery) this.deck = [];
-      this.gallery = gallery;
+      this.loadDeck(this.deckState());
       if (!this.deck.length) {
-        this.deck = Array.from({ length: GALLERIES[gallery].count }, (_, i) => i);
+        this.deck = Array.from({ length: this.deckCount }, (_, i) => i);
         for (let i = this.deck.length - 1; i > 0; i--) {
           const j = Math.floor(Math.random() * (i + 1));
           [this.deck[i], this.deck[j]] = [this.deck[j], this.deck[i]];
         }
+        const last = this.deck.length - 1;
+        if (last > 0 && this.deck[last] === this.lastPainting) {
+          [this.deck[0], this.deck[last]] = [this.deck[last], this.deck[0]];
+        }
       }
       this.painting = this.deck.pop();
+      this.lastPainting = this.painting;
       this.seed = Math.floor(Math.random() * 2147483647);
       this.broadcastRoom();
       this.setPhase('prepare', MS.prepare, 'hide');
@@ -411,7 +628,7 @@
 
     endHide() {
       if (this.phase !== 'hide') return;
-      this.checkStarted = now();
+      this.checkStarted = this.time();
       this.setPhase('check', MS.checkMax, 'finishCheck');
       for (const p of this.activeConnected()) {
         if (!p.ready || !this.figures[p.id]) this.send(p, { t: 'collect' });
@@ -423,7 +640,7 @@
       if (this.phase !== 'check') return;
       const missing = this.activeConnected().filter((p) => !this.figures[p.id]);
       if (missing.length) return;
-      this.deadline = Math.max(now(), this.checkStarted + MS.checkMin);
+      this.deadline = Math.max(this.time(), this.checkStarted + MS.checkMin);
       this.phaseEndsAt = this.deadline;
       this.scheduleTimer();
     }
@@ -500,7 +717,7 @@
   }
 
   root.HideRoom = {
-    Room, PAINTING_COUNT, ART_COUNT, POSE_COUNT, MAX_PLAYERS, COLOR_COUNT, DEFAULTS, LIMITS, GALLERIES, MS, MISS_PENALTY,
-    cleanName, seekLimit, scoreRound, galleryName, galleryOf,
+    Room, PAINTING_COUNT, ARTWORK_COUNT, PROTOCOL_VERSION, CATALOG_VERSION, POSE_COUNT, MAX_PLAYERS, COLOR_COUNT, DEFAULTS, LIMITS, MS, MISS_PENALTY,
+    COLLECTIONS, collectionOf, cleanName, seekLimit, scoreRound,
   };
 })(typeof globalThis !== 'undefined' ? globalThis : this);

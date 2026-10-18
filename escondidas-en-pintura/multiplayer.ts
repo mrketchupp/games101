@@ -2,9 +2,11 @@
 // Lo monta el servidor de la colección (../server.ts) en /escondidas-en-pintura/ws.
 // deno-lint-ignore-file no-explicit-any
 
+import "./artworks.js";
+import "./bot-ai.js";
 import "./room.js";
 
-const { Room } = (globalThis as any).HideRoom;
+const { Room, PROTOCOL_VERSION, CATALOG_VERSION, ARTWORK_COUNT } = (globalThis as any).HideRoom;
 
 const MAX_MESSAGE = 450_000;
 const EMPTY_ROOM_TTL = 2 * 60_000;
@@ -58,6 +60,11 @@ export function createMultiplayer() {
         return;
       }
       if (!room) {
+        if (msg.protocol !== PROTOCOL_VERSION || msg.catalog !== CATALOG_VERSION) {
+          conn.send({ t: "error", code: "version", msg: "Esta sala usa otra versión del juego. Actualiza la página antes de volver a entrar." });
+          ws.close(1008, "Actualiza el juego");
+          return;
+        }
         let target: any = null;
         if (msg.t === "create") {
           const code = makeCode();
@@ -87,6 +94,10 @@ export function createMultiplayer() {
         }
         return;
       }
+      if (player.conn !== conn) {
+        ws.close(4001, "Conexión reemplazada");
+        return;
+      }
       room.handle(player, msg);
     };
 
@@ -107,7 +118,7 @@ export function createMultiplayer() {
       return response;
     },
     stats() {
-      return { rooms: rooms.size };
+      return { rooms: rooms.size, protocol: PROTOCOL_VERSION, artworks: ARTWORK_COUNT, cpu: true };
     },
   };
 }

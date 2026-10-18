@@ -1,15 +1,15 @@
-import "../escondidas-en-pintura/room.js";
 import "../escondidas-en-pintura/artworks.js";
+import "../escondidas-en-pintura/bot-ai.js";
+import "../escondidas-en-pintura/room.js";
 
 // deno-lint-ignore no-explicit-any
-const { Room, MS, ART_COUNT, GALLERIES } = (globalThis as any).HideRoom;
-// deno-lint-ignore no-explicit-any
-const { Artworks } = globalThis as any;
+const HideRoom = (globalThis as any).HideRoom;
+const { Room, MS, PAINTING_COUNT, ARTWORK_COUNT, COLLECTIONS, collectionOf } = HideRoom;
 
 type Message = {
   t: string;
   phase?: string;
-  duration?: number;
+  duration?: number | null;
   [key: string]: unknown;
 };
 type Connection = { send(message: Message): void };
@@ -61,6 +61,700 @@ function advance(room: { deadline: number; tick(timestamp: number): boolean }) {
   assert(room.deadline > 0, "Timed phases have a persisted deadline");
   assert(room.tick(room.deadline), "A due deadline advances the phase");
 }
+
+Deno.test("room settings default safely and only accept supported numeric values", () => {
+  const defaults = {
+    rounds: 3,
+    hideTime: 120,
+    seekTime: 30,
+    difficulty: 1,
+    collection: 0,
+    bots: 0,
+    botLevel: 1,
+  };
+  const invalid = [-1, 3, "2", null, false, [], {}, NaN, Infinity];
+  for (const value of invalid) {
+    const room = new Room("TEST", {
+      externalTimers: true,
+      settings: {
+        rounds: 4,
+        hideTime: 0,
+        seekTime: "30",
+        difficulty: value,
+        collection: value,
+        unknown: "ignored",
+      },
+    });
+    try {
+      assertEquals(
+        room.settings,
+        defaults,
+        "Invalid constructor settings use defaults",
+      );
+    } finally {
+      room.destroy();
+    }
+  }
+  const { room, players } = makeRoom();
+  try {
+    room.handle(players[0], { t: "settings", difficulty: 2, collection: 1 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [2, 1],
+      "The host can choose a supported difficulty and collection",
+    );
+    for (const value of [...invalid, 2.5]) {
+      room.handle(players[0], {
+        t: "settings",
+        difficulty: value,
+        collection: value,
+        unknown: "ignored",
+      });
+      assertEquals(
+        room.settings,
+        { ...defaults, difficulty: 2, collection: 1, hideTime: 300, seekTime: 60 },
+        "Invalid messages retain the last valid settings",
+      );
+    }
+    room.handle(players[0], { t: "settings", difficulty: 0, collection: 0 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [0, 0],
+      "Zero selects easy patterns rather than falling back to defaults",
+    );
+  } finally {
+    room.destroy();
+  }
+});
+
+Deno.test("only the host can change settings while the room is in the lobby", () => {
+  const { room, players } = makeRoom();
+  try {
+    room.handle(players[1], { t: "settings", difficulty: 2, collection: 1 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [1, 0],
+      "A guest cannot change lobby settings",
+    );
+    room.handle(players[0], { t: "settings", difficulty: 0, collection: 1 });
+    room.handle(players[0], { t: "start" });
+    room.handle(players[0], { t: "settings", difficulty: 2, collection: 0 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [0, 1],
+      "The active round keeps the selected board settings",
+    );
+    room.final();
+    room.handle(players[0], { t: "settings", difficulty: 2, collection: 0 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [0, 1],
+      "The final standings also keep the played settings",
+    );
+    room.handle(players[0], { t: "lobby" });
+    room.handle(players[0], { t: "settings", difficulty: 2, collection: 0 });
+    assertEquals(
+      [room.settings.difficulty, room.settings.collection],
+      [2, 0],
+      "Returning to the lobby enables host changes again",
+    );
+  } finally {
+    room.destroy();
+  }
+});
+
+Deno.test("all phases and restored sync carry the selected board settings", () => {
+  const { room, players, messages } = makeRoom({
+    settings: { rounds: 1, difficulty: 2, collection: 1 },
+  });
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    advance(room);
+    for (const player of players) {
+      room.handle(player, { t: "submit", fig: figure });
+    }
+    advance(room);
+    const snapshot = room.snapshot();
+    restored = Room.restore(JSON.parse(JSON.stringify(snapshot)), {
+      externalTimers: true,
+    });
+    assertEquals(
+      restored.snapshot(),
+      snapshot,
+      "New snapshots preserve every game field",
+    );
+    const synced: Message[] = [];
+    const player = restored.players[0];
+    player.conn = {
+      send(message: Message) {
+        synced.push(message);
+      },
+    };
+    restored.sync(player);
+    assertEquals(
+      [synced[0].phase, synced[0].difficulty, synced[0].collection],
+      ["seek", 2, 1],
+      "A reconnect receives the persisted difficulty and artwork collection",
+    );
+    advance(room);
+    advance(room);
+    room.handle(players[0], { t: "lobby" });
+    const phases = messages[0].filter((message) => message.t === "phase");
+    assertEquals(
+      phases.map((message) => message.phase),
+      ["prepare", "hide", "check", "seek", "results", "final", "lobby"],
+      "The game exercised every phase transition",
+    );
+    assert(
+      phases.every((message) =>
+        message.difficulty === 2 && message.collection === 1
+      ),
+      "Every phase identifies the same board settings",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("legacy snapshots retain the ongoing round and receive compatible defaults", () => {
+  const { room, players } = makeRoom({
+    settings: { rounds: 5, hideTime: 90, seekTime: 45 },
+  });
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    advance(room);
+    room.handle(players[0], { t: "submit", fig: figure });
+    const snapshot = room.snapshot();
+    delete snapshot.settings.difficulty;
+    delete snapshot.settings.collection;
+    delete snapshot.phaseMsg.difficulty;
+    delete snapshot.phaseMsg.collection;
+    delete snapshot.deckCollection;
+    delete snapshot.deckCount;
+    delete snapshot.lastPainting;
+    restored = Room.restore(JSON.parse(JSON.stringify(snapshot)), {
+      externalTimers: true,
+    });
+    assertEquals(
+      restored.settings,
+      { rounds: 5, hideTime: 90, seekTime: 45, difficulty: 0, collection: 0, bots: 0, botLevel: 1 },
+      "A legacy game retains its original untextured background and room choices",
+    );
+    for (
+      const key of [
+        "phase",
+        "round",
+        "painting",
+        "seed",
+        "deadline",
+        "deck",
+        "figures",
+      ]
+    ) {
+      assertEquals(
+        restored[key],
+        snapshot[key],
+        `Legacy restoration preserves ${key}`,
+      );
+    }
+    const synced: Message[] = [];
+    restored.players[1].conn = {
+      send(message: Message) {
+        synced.push(message);
+      },
+    };
+    restored.sync(restored.players[1]);
+    assertEquals(
+      [synced[0].difficulty, synced[0].collection],
+      [0, 0],
+      "Legacy reconnects identify the original untextured board settings",
+    );
+    restored.handle(restored.players[1], { t: "submit", fig: figure });
+    assertEquals(
+      restored.phase,
+      "check",
+      "The restored ongoing round remains playable",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("legacy lobby snapshots use normal difficulty for the next new game", () => {
+  const { room, players } = makeRoom();
+  let restored;
+  try {
+    const snapshot = room.snapshot();
+    delete snapshot.settings.difficulty;
+    delete snapshot.settings.collection;
+    delete snapshot.phaseMsg.difficulty;
+    delete snapshot.phaseMsg.collection;
+    delete snapshot.deckCollection;
+    delete snapshot.deckCount;
+    delete snapshot.lastPainting;
+    restored = Room.restore(snapshot, { externalTimers: true });
+    restored.handle(restored.get(players[0].id), { t: "start" });
+    assertEquals(
+      [
+        restored.phase,
+        restored.phaseMsg.difficulty,
+        restored.phaseMsg.collection,
+      ],
+      ["prepare", 1, 0],
+      "Only ongoing legacy games retain easy backgrounds; a new game uses normal patterns",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("legacy artwork games reject joins without reinterpreting their figures or painting indices", () => {
+  for (const phase of ["prepare", "hide", "check", "seek", "results", "final"]) {
+    for (const gallerySource of ["room", "settings", "phase"]) {
+      const { room, players } = makeRoom();
+      let restored;
+      let restoredAgain;
+      try {
+        room.handle(players[0], { t: "start" });
+        const snapshot = room.snapshot();
+        delete snapshot.legacyArtRoom;
+        delete snapshot.settings.collection;
+        delete snapshot.settings.difficulty;
+        delete snapshot.phaseMsg.collection;
+        delete snapshot.phaseMsg.difficulty;
+        snapshot.phase = phase;
+        snapshot.phaseMsg.phase = phase;
+        snapshot.painting = 11;
+        snapshot.phaseMsg.painting = 11;
+        snapshot.figures = { [players[0].id]: { ...figure } };
+        snapshot.phaseMsg.figs = { [players[0].id]: { ...figure } };
+        if (gallerySource === "room") snapshot.gallery = "arte";
+        if (gallerySource === "settings") snapshot.settings.gallery = "arte";
+        if (gallerySource === "phase") snapshot.phaseMsg.gallery = "arte";
+        restored = Room.restore(snapshot, { externalTimers: true });
+        assert(restored.legacyArtRoom, "Every legacy artwork phase and gallery field is identified before catch-up");
+        const before = restored.snapshot();
+        const sent: Message[] = [];
+        const joined = restored.join({ send: (message: Message) => sent.push(message) }, { pid: "human-0" });
+        assertEquals(joined, { error: "Esta sala pertenece a una versión anterior. Crea una sala nueva para continuar." }, "An incompatible artwork room explains how to continue");
+        assertEquals(sent, [], "The rejected player receives no mismatched board or figure sync");
+        assertEquals(restored.snapshot(), before, "Rejecting a join does not reset the legacy game");
+        for (const key of ["painting", "seed", "figures"]) {
+          assertEquals(restored[key], snapshot[key], `Legacy artwork detection preserves ${key}`);
+        }
+        assertEquals(restored.phaseMsg.figs, snapshot.phaseMsg.figs, "The old PNGs remain exactly as saved");
+        restored.tick(restored.deadline + 1_000_000);
+        assert(restored.legacyArtRoom, "Catch-up cannot silently upgrade an incompatible artwork room");
+        restoredAgain = Room.restore(restored.snapshot(), { externalTimers: true });
+        assert(restoredAgain.legacyArtRoom, "The compatibility marker survives subsequent snapshots with normalized settings");
+        assert(restoredAgain.join({ send() {} }, { pid: "human-0" }).error, "A later restore still directs players to a new room");
+      } finally {
+        room.destroy();
+        restored?.destroy();
+        restoredAgain?.destroy();
+      }
+    }
+  }
+});
+
+Deno.test("legacy classic games retain their untextured board and accept reconnecting players", () => {
+  const { room, players } = makeRoom();
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    advance(room);
+    room.handle(players[0], { t: "submit", fig: figure });
+    const snapshot = room.snapshot();
+    delete snapshot.settings.collection;
+    delete snapshot.settings.difficulty;
+    snapshot.settings.gallery = "clasico";
+    snapshot.gallery = "clasico";
+    snapshot.phaseMsg.gallery = "clasico";
+    restored = Room.restore(snapshot, { externalTimers: true });
+    assertEquals(restored.legacyArtRoom, false, "Only legacy artwork games need a new room");
+    assertEquals([restored.settings.collection, restored.settings.difficulty], [0, 0], "The original classic game retains its untextured board");
+    const sent: Message[] = [];
+    const joined = restored.join({ send: (message: Message) => sent.push(message) }, { pid: "human-0" });
+    assert(joined.player && !joined.error, "A classic player can reconnect normally");
+    assertEquals(sent.map((message) => message.t), ["welcome", "room", "phase"], "The reconnect receives a normal board sync");
+    for (const key of ["phase", "painting", "seed", "deadline", "figures"]) {
+      assertEquals(restored[key], snapshot[key], `Classic reconnection preserves ${key}`);
+    }
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("an old artwork lobby can join and choose the current collection without a legacy-game block", () => {
+  const { room } = makeRoom();
+  let restored;
+  try {
+    const snapshot = room.snapshot();
+    delete snapshot.settings.collection;
+    delete snapshot.settings.difficulty;
+    snapshot.settings.gallery = "arte";
+    snapshot.gallery = "arte";
+    snapshot.phaseMsg.gallery = "arte";
+    restored = Room.restore(snapshot, { externalTimers: true });
+    const joined = restored.join({ send() {} }, { pid: "human-0" });
+    assert(joined.player && !joined.error, "An unstarted lobby has no artwork PNGs to reinterpret");
+    assertEquals([restored.legacyArtRoom, restored.settings.collection, restored.settings.difficulty], [false, 0, 1], "The old lobby receives current safe defaults");
+    restored.handle(joined.player, { t: "settings", collection: 1 });
+    restored.handle(joined.player, { t: "start" });
+    assertEquals([restored.phase, restored.settings.collection, restored.legacyArtRoom], ["prepare", 1, false], "The host can start a new game using the current artwork catalog");
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("current collection snapshots ignore obsolete gallery labels", () => {
+  for (const collection of [0, 1]) {
+    const { room, players } = makeRoom({ settings: { collection } });
+    let restored;
+    try {
+      room.handle(players[0], { t: "start" });
+      const snapshot = room.snapshot();
+      snapshot.gallery = "arte";
+      snapshot.settings.gallery = "arte";
+      snapshot.phaseMsg.gallery = "arte";
+      restored = Room.restore(snapshot, { externalTimers: true });
+      assertEquals(restored.legacyArtRoom, false, "An explicit collection already identifies the current board format");
+      const joined = restored.join({ send() {} }, { pid: "human-0" });
+      assert(joined.player && !joined.error, "Stale metadata does not block a current-format game");
+      assertEquals(restored.settings.collection, collection, "Reconnection keeps the explicit collection");
+    } finally {
+      room.destroy();
+      restored?.destroy();
+    }
+  }
+});
+
+Deno.test("each collection uses every painting before refilling its persisted deck", () => {
+  for (const [collection, count] of [[0, PAINTING_COUNT], [1, ARTWORK_COUNT]]) {
+    const { room, players } = makeRoom({ settings: { collection } });
+    let restored;
+    try {
+      room.handle(players[0], { t: "start" });
+      const first = [room.painting];
+      restored = Room.restore(room.snapshot(), { externalTimers: true });
+      for (let i = 1; i < count; i++) {
+        restored.nextRound();
+        first.push(restored.painting);
+      }
+      assertEquals(
+        first.slice().sort((a, b) => a - b),
+        Array.from({ length: count }, (_, i) => i),
+        "Restoration preserves a nonrepeating full collection",
+      );
+      assertEquals(
+        restored.deck,
+        [],
+        "The deck is exhausted exactly once per collection",
+      );
+      const second = [];
+      for (let i = 0; i < count; i++) {
+        restored.nextRound();
+        second.push(restored.painting);
+      }
+      assertEquals(
+        second.slice().sort((a, b) => a - b),
+        Array.from({ length: count }, (_, i) => i),
+        "The second cycle also exhausts the collection without premature repetition",
+      );
+      assert(
+        second[0] !== first.at(-1),
+        "Refilling the deck never repeats the immediately preceding painting",
+      );
+    } finally {
+      room.destroy();
+      restored?.destroy();
+    }
+  }
+});
+
+Deno.test("consecutive games in the same room retain their unplayed collection", () => {
+  for (const [collection, count] of [[0, PAINTING_COUNT], [1, ARTWORK_COUNT]]) {
+    const { room, players } = makeRoom({ settings: { rounds: 1, collection } });
+    try {
+      const cycles: number[][] = [[], []];
+      for (let i = 0; i < count * 2; i++) {
+        room.handle(players[0], { t: "start" });
+        cycles[Math.floor(i / count)].push(room.painting);
+        room.final();
+        if (i % 2 === 0) room.handle(players[0], { t: "lobby" });
+      }
+      for (const cycle of cycles) {
+        assertEquals(
+          cycle.slice().sort((a, b) => a - b),
+          Array.from({ length: count }, (_, i) => i),
+          "Replays and lobby restarts preserve all unplayed paintings",
+        );
+      }
+      assert(
+        cycles[0].at(-1) !== cycles[1][0],
+        "A new game also avoids a repeat at the cycle boundary",
+      );
+    } finally {
+      room.destroy();
+    }
+  }
+});
+
+Deno.test("a fresh room can draw painting zero and a refilled deck avoids its real last draw", () => {
+  const originalRandom = Math.random;
+  const { room, players } = makeRoom();
+  try {
+    // This shuffle puts index zero at the end, where pop() takes the next painting.
+    Math.random = () => 0;
+    assertEquals(
+      room.lastPainting,
+      null,
+      "The initial painting placeholder is not history",
+    );
+    room.handle(players[0], { t: "start" });
+    assertEquals(
+      room.painting,
+      0,
+      "A fresh room is allowed to draw index zero",
+    );
+    room.deck = [];
+    room.nextRound();
+    assert(
+      room.painting !== 0,
+      "A refill swaps away a real immediately repeated draw",
+    );
+  } finally {
+    Math.random = originalRandom;
+    room.destroy();
+  }
+});
+
+Deno.test("CPU deck state transfers history without transferring game state or mutable arrays", () => {
+  const { room, players } = makeRoom({ settings: { collection: 1 } });
+  let replay;
+  try {
+    room.handle(players[0], { t: "start" });
+    const history = room.deckState();
+    replay = makeRoom({ settings: { collection: 1 }, deckState: history });
+    assertEquals(
+      replay.room.deckState(),
+      history,
+      "The constructor reuses compatible CPU history",
+    );
+    assertEquals(
+      [replay.room.phase, replay.room.round, replay.room.lastPainting],
+      ["lobby", 0, room.painting],
+      "Deck history does not restore the previous match",
+    );
+    const next = history.deck.at(-1);
+    history.deck.length = 0;
+    assert(
+      replay.room.deck.length > 0,
+      "The constructor clones the supplied deck",
+    );
+    assert(room.deck.length > 0, "Exporting history clones the original deck");
+    replay.room.handle(replay.players[0], { t: "start" });
+    assertEquals(
+      replay.room.painting,
+      next,
+      "The next CPU game continues the saved deck",
+    );
+    assert(
+      replay.room.painting !== room.painting,
+      "The next CPU game avoids the preceding artwork",
+    );
+  } finally {
+    room.destroy();
+    replay?.room.destroy();
+  }
+});
+
+Deno.test("CPU deck history validates ownership, catalog size and painting indexes", () => {
+  const base = {
+    deck: [0, 1],
+    deckCollection: 1,
+    deckCount: ARTWORK_COUNT,
+    lastPainting: 2,
+  };
+  const invalid = [
+    { ...base, deckCollection: 0 },
+    { ...base, deckCount: ARTWORK_COUNT - 1 },
+    { ...base, deck: [0, 0] },
+    { ...base, deck: [2] },
+    { ...base, deck: [-1] },
+    { ...base, deck: [ARTWORK_COUNT] },
+    { ...base, deck: ["0"] },
+    { ...base, deck: null },
+  ];
+  for (const deckState of invalid) {
+    const room = new Room("CPU", {
+      externalTimers: true,
+      settings: { collection: 1 },
+      deckState,
+    });
+    try {
+      assertEquals(
+        room.deck,
+        [],
+        "Invalid history is replaced with a new deck",
+      );
+      assertEquals(
+        room.deckCount,
+        ARTWORK_COUNT,
+        "History always uses the live catalog count",
+      );
+      assertEquals(
+        room.deckCollection,
+        1,
+        "History always uses the selected collection",
+      );
+    } finally {
+      room.destroy();
+    }
+  }
+});
+
+Deno.test("restoring an older catalog refills the expanded deck without changing the current round", () => {
+  const { room, players } = makeRoom({ settings: { collection: 1 } });
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    const snapshot = room.snapshot();
+    snapshot.deck = [1];
+    snapshot.deckCount = ARTWORK_COUNT - 1;
+    snapshot.lastPainting = 0;
+    snapshot.painting = 0;
+    snapshot.phaseMsg.painting = 0;
+    restored = Room.restore(snapshot, { externalTimers: true });
+    for (
+      const key of [
+        "phase",
+        "round",
+        "painting",
+        "seed",
+        "deadline",
+        "phaseMsg",
+      ]
+    ) {
+      assertEquals(
+        restored[key],
+        snapshot[key],
+        `A catalog update preserves ${key}`,
+      );
+    }
+    assertEquals(
+      restored.deck,
+      [],
+      "A different catalog count invalidates the remaining deck",
+    );
+    assertEquals(
+      restored.deckCount,
+      ARTWORK_COUNT,
+      "The expanded catalog is used next round",
+    );
+    const cycle = [];
+    for (let i = 0; i < ARTWORK_COUNT; i++) {
+      restored.nextRound();
+      cycle.push(restored.painting);
+    }
+    assert(
+      cycle[0] !== 0,
+      "A catalog update avoids immediately repeating the current painting",
+    );
+    assertEquals(
+      cycle.slice().sort((a, b) => a - b),
+      Array.from({ length: ARTWORK_COUNT }, (_, i) => i),
+      "The new cycle includes every index from the expanded catalog",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("four-artwork legacy snapshots infer their original catalog size", () => {
+  const { room, players } = makeRoom({ settings: { collection: 1 } });
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    const snapshot = room.snapshot();
+    snapshot.deck = [1, 2, 3];
+    snapshot.painting = 0;
+    snapshot.phaseMsg.painting = 0;
+    delete snapshot.deckCount;
+    delete snapshot.lastPainting;
+    restored = Room.restore(snapshot, { externalTimers: true });
+    assertEquals(
+      [restored.painting, restored.lastPainting],
+      [0, 0],
+      "A legacy artwork match retains its current board and real last draw",
+    );
+    assertEquals(
+      restored.deck,
+      ARTWORK_COUNT === 4 ? [1, 2, 3] : [],
+      "The old four-artwork deck survives only if the live catalog still has four artworks",
+    );
+    assertEquals(
+      restored.deckCount,
+      ARTWORK_COUNT,
+      "Subsequent draws use the live catalog size",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
+
+Deno.test("changing collections discards stale decks and restoration detects old deck ownership", () => {
+  const { room, players } = makeRoom();
+  let restored;
+  try {
+    room.handle(players[0], { t: "start" });
+    room.toLobby();
+    const patternDeck = room.deck.slice();
+    room.handle(players[0], { t: "settings", difficulty: 2 });
+    assertEquals(
+      room.deck,
+      patternDeck,
+      "Changing difficulty retains collection ownership",
+    );
+    room.handle(players[0], { t: "settings", collection: 1 });
+    assertEquals(
+      room.deck,
+      [],
+      "Changing collection discards the previous painting deck",
+    );
+    assertEquals(
+      room.deckCollection,
+      1,
+      "New decks belong to the artwork collection",
+    );
+    const snapshot = room.snapshot();
+    snapshot.deck = [9, 8, 7];
+    snapshot.deckCollection = 0;
+    restored = Room.restore(snapshot, { externalTimers: true });
+    assertEquals(
+      restored.deck,
+      [],
+      "Restoration drops a deck belonging to another collection",
+    );
+    restored.nextRound();
+    assert(
+      restored.painting >= 0 && restored.painting < ARTWORK_COUNT,
+      "A stale pattern index cannot appear in an artwork round",
+    );
+  } finally {
+    room.destroy();
+    restored?.destroy();
+  }
+});
 
 Deno.test("external timers create no local timer and reject an early tick", () => {
   const { room, players } = makeRoom();
@@ -381,90 +1075,112 @@ Deno.test("default CPU timers still advance phases and resume after restoration"
   }
 });
 
-Deno.test("the art gallery matches the artwork files and uses its own timings", async () => {
-  assertEquals(ART_COUNT, Artworks.count, "room.js and artworks.js agree on the number of artworks");
-  for (const art of Artworks.list) {
-    const info = await Deno.stat(new URL(`../escondidas-en-pintura/obras/${art.file}`, import.meta.url));
-    assert(info.isFile && info.size > 10_000, `${art.file} exists`);
+Deno.test("collections retain distinct supported timers and reset defaults when switching", () => {
+  assertEquals(collectionOf(0), COLLECTIONS[0], "Patterns expose their collection rules");
+  assertEquals(collectionOf(1), COLLECTIONS[1], "Artwork exposes its collection rules");
+  for (const value of ["1", null, false, -1, 2, {}]) {
+    assertEquals(collectionOf(value), COLLECTIONS[0], "Invalid collection keys safely select patterns");
   }
-  const { room, players } = makeRoom();
-  try {
-    assertEquals(room.settings.gallery, "clasico", "Rooms start with the classic paintings");
-    room.handle(players[1], { t: "settings", gallery: "arte" });
-    assertEquals(room.settings.gallery, "clasico", "Only the host changes the gallery");
-    room.handle(players[0], { t: "settings", gallery: "arte" });
-    assertEquals(
-      [room.settings.gallery, room.settings.hideTime, room.settings.seekTime],
-      ["arte", GALLERIES.arte.hideDefault, GALLERIES.arte.seekDefault],
-      "Switching gallery applies its default times",
-    );
-    room.handle(players[0], { t: "settings", hideTime: 90, seekTime: 20 });
-    assertEquals(
-      [room.settings.hideTime, room.settings.seekTime],
-      [GALLERIES.arte.hideDefault, GALLERIES.arte.seekDefault],
-      "Classic-only times are rejected for artworks",
-    );
-    room.handle(players[0], { t: "settings", hideTime: 600, seekTime: 120 });
-    assertEquals([room.settings.hideTime, room.settings.seekTime], [600, 120], "Longer times are accepted");
-    for (const bad of ["__proto__", ["arte"], "toString"]) {
-      room.handle(players[0], { t: "settings", gallery: bad });
-      assertEquals(room.settings.gallery, "arte", `Invalid gallery ${JSON.stringify(bad)} is ignored`);
+  for (const collection of [0, 1]) {
+    const rules = collectionOf(collection);
+    const constructed = new Room("TIMERS", { externalTimers: true, settings: { collection } });
+    try {
+      assertEquals([constructed.settings.hideTime, constructed.settings.seekTime], [rules.hideDefault, rules.seekDefault], "Constructor uses the selected collection defaults");
+    } finally {
+      constructed.destroy();
     }
-    const seen = new Set();
-    for (let round = 0; round < ART_COUNT; round++) {
-      room.round = 0;
-      room.nextRound();
-      assertEquals(room.phaseMsg.gallery, "arte", "Phase messages name the gallery");
-      assert(room.painting >= 0 && room.painting < ART_COUNT, "Artwork index is in range");
-      seen.add(room.painting);
+    const { room, players } = makeRoom({ settings: { collection } });
+    try {
+      for (const hideTime of rules.hideTime) {
+        for (const seekTime of rules.seekTime) {
+          room.handle(players[0], { t: "settings", hideTime, seekTime });
+          assertEquals([room.settings.hideTime, room.settings.seekTime], [hideTime, seekTime], "The collection accepts every advertised timer pair");
+        }
+      }
+      const timers = [room.settings.hideTime, room.settings.seekTime];
+      for (const value of ["180", null, false, -1, 1, 200, NaN, Infinity]) {
+        room.handle(players[0], { t: "settings", hideTime: value, seekTime: value });
+        assertEquals([room.settings.hideTime, room.settings.seekTime], timers, "Invalid timer messages retain both supported choices");
+      }
+      const next = 1 - collection;
+      room.handle(players[0], { t: "settings", collection: next });
+      assertEquals([room.settings.hideTime, room.settings.seekTime], [collectionOf(next).hideDefault, collectionOf(next).seekDefault], "Switching collection selects its own defaults");
+      room.handle(players[0], { t: "settings", collection, hideTime: rules.hideTime.at(-1), seekTime: rules.seekTime.at(-1) });
+      assertEquals([room.settings.hideTime, room.settings.seekTime], [rules.hideTime.at(-1), rules.seekTime.at(-1)], "An atomic collection change accepts valid explicit times");
+      const invalidHide = collection ? 60 : 600;
+      const invalidSeek = collection ? 20 : 120;
+      room.handle(players[0], { t: "settings", hideTime: invalidHide, seekTime: invalidSeek });
+      assertEquals([room.settings.hideTime, room.settings.seekTime], [rules.hideTime.at(-1), rules.seekTime.at(-1)], "Times belonging only to the other collection are rejected");
+      const invalidRoom = new Room("BADTIMERS", { externalTimers: true, settings: { collection, hideTime: invalidHide, seekTime: invalidSeek } });
+      try {
+        assertEquals([invalidRoom.settings.hideTime, invalidRoom.settings.seekTime], [rules.hideDefault, rules.seekDefault], "Invalid constructor times normalize to collection defaults");
+      } finally {
+        invalidRoom.destroy();
+      }
+    } finally {
+      room.destroy();
     }
-    assertEquals(seen.size, ART_COUNT, "A full deck shows every artwork once");
-  } finally {
-    room.destroy();
   }
 });
 
-Deno.test("unlimited hiding waits for everyone until the host gives the last 30 seconds", () => {
-  const { room, messages, players } = makeRoom({ settings: { gallery: "arte", hideTime: 0, rounds: 1 } });
+Deno.test("unlimited artwork hiding restores and only the host can start its final thirty seconds", () => {
+  const { room, players } = makeRoom({ settings: { collection: 1, hideTime: 0 } });
+  let restored;
   try {
+    room.handle(players[0], { t: "hurry" });
+    assertEquals(room.phase, "lobby", "Hurry has no effect outside hiding");
     room.handle(players[0], { t: "start" });
     advance(room);
-    assertEquals(room.phase, "hide", "Hiding starts");
-    assertEquals([room.deadline, room.transition], [0, null], "Unlimited hiding has no deadline");
-    assertEquals(room.phaseMsg.duration, null, "Clients receive no duration");
-    assertEquals(room.tick(Date.now() + 3_600_000), false, "Even an hour later nothing advances by itself");
-    room.handle(players[1], { t: "hurry" });
-    assertEquals(room.deadline, 0, "Only the host can hurry");
+    assertEquals([room.phase, room.deadline, room.phaseEndsAt, room.transition, room.phaseMsg.duration, room.nextWakeAt()], ["hide", 0, 0, null, null, 0], "Unlimited hiding has no deadline or timer transition");
+    assert(!room.tick(room.phaseStartedAt + 600_000), "Elapsed time alone cannot finish unlimited hiding");
     room.handle(players[0], { t: "submit", fig: figure });
+    room.handle(players[1], { t: "figure", fig: { ...figure, x: 300 } });
+    const snapshot = room.snapshot();
+    restored = Room.restore(JSON.parse(JSON.stringify(snapshot)), { externalTimers: true });
+    assertEquals(restored.snapshot(), snapshot, "Unlimited hiding survives a JSON persistence cycle");
+    const replay: Message[] = [];
+    restored.players[0].conn = { send: (message: Message) => replay.push(message) };
+    restored.sync(restored.players[0]);
+    assertEquals([replay[0].phase, replay[0].duration], ["hide", null], "Reconnecting players receive the unlimited duration explicitly");
+    room.handle(players[1], { t: "hurry" });
+    assertEquals(room.snapshot(), snapshot, "A guest cannot set the final deadline");
+    room.lastTickAt = room.phaseStartedAt + 60_000;
+    const startedAt = room.phaseStartedAt;
+    const hurryAt = room.time();
+    const state = {
+      seed: room.seed, figures: structuredClone(room.figures), ready: room.players.map((p: { ready: boolean }) => p.ready),
+      deck: room.deck.slice(), finds: room.finds.slice(), done: { ...room.done },
+    };
     room.handle(players[0], { t: "hurry" });
-    assertEquals(room.transition, "endHide", "Hurry schedules the end of hiding");
-    const last = messages[1].at(-1)!;
-    assertEquals([last.phase, last.duration, last.hurry], ["hide", MS.hurry, true], "Everyone hears about the last 30 seconds");
-    const deadline = room.deadline;
+    assertEquals([room.deadline, room.phaseEndsAt, room.transition, room.phaseMsg.duration, room.phaseMsg.hurry], [hurryAt + MS.hurry, hurryAt + 30_000, "endHide", 30_000, true], "The host sets exactly thirty final seconds from the current logical clock");
+    assertEquals(room.phaseStartedAt, startedAt, "Hurry preserves the original start of hiding");
+    assertEquals({ seed: room.seed, figures: room.figures, ready: room.players.map((p: { ready: boolean }) => p.ready), deck: room.deck, finds: room.finds, done: room.done }, state, "Hurry retains paintings, readiness, seeds and round history");
+    const hurried = room.snapshot();
     room.handle(players[0], { t: "hurry" });
-    assertEquals(room.deadline, deadline, "A second hurry does not move the deadline");
-    const restored = Room.restore(JSON.parse(JSON.stringify(room.snapshot())), { externalTimers: true });
-    assertEquals(restored.deadline, deadline, "The hurried deadline survives a restart");
+    assertEquals(room.snapshot(), hurried, "Repeated hurry messages cannot extend the deadline");
     restored.destroy();
-    advance(room);
-    assertEquals(room.phase, "check", "The hurried deadline ends hiding");
+    restored = Room.restore(hurried, { externalTimers: true });
+    assertEquals([restored.deadline, restored.phaseStartedAt, restored.phaseMsg.hurry], [hurried.deadline, startedAt, true], "Persistence preserves the shortened deadline and original start");
+    assert(!restored.tick(restored.deadline - 1), "The last thirty seconds cannot expire early");
+    advance(restored);
+    assertEquals(restored.phase, "check", "The final deadline advances to collection");
+    advance(restored);
+    assertEquals(restored.phase, "seek", "Collected figures continue into searching");
+    const seekState = restored.snapshot();
+    restored.handle(restored.players[0], { t: "hurry" });
+    assertEquals(restored.snapshot(), seekState, "Hurry cannot alter searching or its plans");
   } finally {
     room.destroy();
+    restored?.destroy();
   }
-});
-
-Deno.test("rooms saved before galleries restore as classic", () => {
-  const { room } = makeRoom();
+  const finite = makeRoom({ settings: { collection: 1, hideTime: 180 } });
   try {
-    const old = room.snapshot();
-    delete old.settings.gallery;
-    delete old.gallery;
-    const restored = Room.restore(old, { externalTimers: true });
-    assertEquals(restored.settings.gallery, "clasico", "Missing gallery means classic");
-    restored.nextRound();
-    assertEquals(restored.phaseMsg.gallery, "clasico", "Rounds use classic paintings");
-    restored.destroy();
+    finite.room.handle(finite.players[0], { t: "start" });
+    advance(finite.room);
+    const before = finite.room.snapshot();
+    finite.room.handle(finite.players[0], { t: "hurry" });
+    assertEquals(finite.room.snapshot(), before, "A timed round keeps its chosen deadline");
   } finally {
-    room.destroy();
+    finite.room.destroy();
   }
 });

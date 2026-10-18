@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Comprobar dificultad de los patrones</title>
+  <style>
+    body { max-width: 960px; margin: 32px auto; padding: 0 16px; font: 16px/1.5 system-ui, sans-serif; }
+    pre { padding: 16px; background: #f3f4f6; white-space: pre-wrap; overflow-wrap: anywhere; }
+  </style>
+</head>
+<body>
+  <h1>Comprobar dificultad de los patrones</h1>
+  <p>
+    Prueba manual: inicia <code>deno task start</code> y abre
+    <code>/scripts/check-painting-difficulty.html</code>. Puede tardar unos segundos.
+  </p>
+  <p>
+    Muestrea los 10 patrones, 3 semillas, las 10 poses y una rejilla de 5 × 5 posiciones
+    válidas por pose. Busca colores uniformes con la misma tolerancia que la mezcla del juego.
+    Normal y Difícil deben quedar por debajo del 90 %. Es una comprobación de regresión
+    sobre posiciones y colores muestreados, no una garantía universal.
+  </p>
+  <p id="status" role="status">Calculando…</p>
+  <pre id="result"></pre>
+  <script src="../escondidas-en-pintura/paintings.js"></script>
+  <script src="../escondidas-en-pintura/figure.js"></script>
+  <script>
+    'use strict';
+
+    // Colores codificados como 0xBBGGRR para leer y comparar los canales RGB.
+    function distanceSquared(a, b) {
+      const dr = (a & 255) - (b & 255);
+      const dg = ((a >> 8) & 255) - ((b >> 8) & 255);
+      const db = ((a >> 16) & 255) - ((b >> 16) & 255);
+      return dr * dr + dg * dg + db * db;
+    }
+
+    function midpoint(a, b) {
+      const r = Math.round(((a & 255) + (b & 255)) / 2);
+      const g = Math.round((((a >> 8) & 255) + ((b >> 8) & 255)) / 2);
+      const blue = Math.round((((a >> 16) & 255) + ((b >> 16) & 255)) / 2);
+      return r | (g << 8) | (blue << 16);
+    }
+
+    function colorText(color) {
+      return `rgb(${color & 255},${(color >> 8) & 255},${(color >> 16) & 255})`;
+    }
+
+    function figureMasks() {
+      return Figure.POSES.map((_, pose) => {
+        const canvas = document.createElement('canvas');
+        canvas.width = canvas.height = Figure.BOX;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        Figure.drawMask(context, pose, Figure.WHITE);
+        const data = context.getImageData(0, 0, Figure.BOX, Figure.BOX).data;
+        const offsets = [];
+        for (let y = 0; y < Figure.BOX; y++) {
+          for (let x = 0; x < Figure.BOX; x++) {
+            if (data[(y * Figure.BOX + x) * 4 + 3] >= 200) {
+              offsets.push(y * Paintings.W + x);
+            }
+          }
+        }
+        return { pose, offsets, bbox: Figure.shape(pose).bbox };
+      });
+    }
+
+    function sampleColors(data, origin, offsets) {
+      const counts = new Map();
+      for (const offset of offsets) {
+        const pixel = (origin + offset) * 4;
+        const color = data[pixel] | (data[pixel + 1] << 8) | (data[pixel + 2] << 16);
+        counts.set(color, (counts.get(color) || 0) + 1);
+      }
+      const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+      const frequent = ranked
+        .filter(([, count]) => count / offsets.length >= 0.005)
+        .slice(0, 16)
+        .map(([color]) => color);
+      const candidates = new Set(frequent);
+      for (let i = 0; i < frequent.length; i++) {
+        for (let j = i + 1; j < frequent.length; j++) {
+          if (distanceSquared(frequent[i], frequent[j]) < 6400) {
+            candidates.add(midpoint(frequent[i], frequent[j]));
+          }
+        }
+      }
+      let best = 0;
+      let bestColor = 0;
+      for (const candidate of candidates) {
+        let matching = 0;
+        for (const [color, count] of ranked) {
+          // Igual que computeBlend: alfa >= 200 y distancia RGB al cuadrado < 1600.
+          if (distanceSquared(color, candidate) < 1600) matching += count;
+        }
+        if (matching > best) {
+          best = matching;
+          bestColor = candidate;
+        }
+      }
+      return {
+        singleColorPct: 100 * best / offsets.length,
+        exactColorPct: 100 * ranked[0][1] / offsets.length,
+        color: colorText(bestColor),
+      };
+    }
+
+    function measure() {
+      const canvas = document.createElement('canvas');
+      const masks = figureMasks();
+      const seeds = [42, 2026, 2147483647];
+      const summaries = [];
+      for (const difficulty of [0, 1, 2]) {
+        let worst = { singleColorPct: 0 };
+        let worstExact = { exactColorPct: 0 };
+        let count = 0;
+        let totalBest = 0;
+        const patterns = [];
+        for (let painting = 0; painting < Paintings.count; painting++) {
+          let patternWorst = 0;
+          for (const seed of seeds) {
+            Paintings.render(painting, seed, canvas, difficulty);
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            const data = context.getImageData(0, 0, Paintings.W, Paintings.H).data;
+            for (const mask of masks) {
+              for (let gy = 0; gy < 5; gy++) {
+                for (let gx = 0; gx < 5; gx++) {
+                  const { x0, x1, y0, y1 } = mask.bbox;
+                  const x = Math.round(-x0 + gx / 4 * (Paintings.W - x1 + x0));
+                  const y = Math.round(-y0 + gy / 4 * (Paintings.H - y1 + y0));
+                  const sample = sampleColors(data, y * Paintings.W + x, mask.offsets);
+                  const detail = {
+                    painting, name: Paintings.names[painting], seed, pose: mask.pose,
+                    x, y, pixels: mask.offsets.length,
+                  };
+                  if (sample.singleColorPct > worst.singleColorPct) {
+                    worst = { ...detail, singleColorPct: sample.singleColorPct, color: sample.color };
+                  }
+                  if (sample.exactColorPct > worstExact.exactColorPct) {
+                    worstExact = { ...detail, exactColorPct: sample.exactColorPct };
+                  }
+                  patternWorst = Math.max(patternWorst, sample.singleColorPct);
+                  totalBest += sample.singleColorPct;
+                  count++;
+                }
+              }
+            }
+          }
+          patterns.push({ painting, name: Paintings.names[painting], maxSingleColorPct: patternWorst });
+        }
+        summaries.push({ difficulty, count, meanBestPct: totalBest / count, worst, worstExact, patterns });
+      }
+      return {
+        maskPoseCount: masks.length,
+        seeds,
+        grid: '5 × 5 posiciones válidas, incluidos los bordes',
+        blendToleranceSquared: 1600,
+        colorCandidates: 'Hasta 16 colores frecuentes por posición y puntos medios entre pares cercanos',
+        summaries,
+      };
+    }
+
+    // Cede un frame para mostrar el aviso antes del cálculo síncrono.
+    requestAnimationFrame(() => setTimeout(() => {
+      try {
+        const result = measure();
+        const passed = result.summaries.every((level) =>
+          level.difficulty === 0 || level.worst.singleColorPct < 90
+        );
+        document.documentElement.dataset.checkStatus = passed ? 'passed' : 'failed';
+        document.querySelector('#status').textContent = passed
+          ? 'Correcto: Normal y Difícil quedan por debajo del 90 % en el muestreo.'
+          : 'Regresión: algún caso de Normal o Difícil alcanza el 90 %.';
+        document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
+      } catch (error) {
+        document.documentElement.dataset.checkStatus = 'failed';
+        document.querySelector('#status').textContent = 'No se pudo completar la comprobación.';
+        document.querySelector('#result').textContent = String(error);
+      }
+    }, 0));
+  </script>
+</body>
+</html>

@@ -3,8 +3,10 @@
     "start": "deno run --allow-net --allow-read --allow-env server.ts",
     "dev": "deno run --watch --allow-net --allow-read --allow-env server.ts",
     "check": "deno check server.ts && deno lint",
-    "test": "deno test --allow-read tests/",
+    "test": "deno test --allow-read=escondidas-en-pintura tests/",
     "test:multiplayer": "deno run --allow-net scripts/smoke-multiplayer.ts",
+    "test:bots": "deno run --allow-net scripts/smoke-bots.ts",
+    "test:protocol": "deno run --allow-net scripts/smoke-protocol.ts",
     "build:pages": "deno run --allow-read --allow-write=_site scripts/build-pages.ts"
   },
   "lint": {
