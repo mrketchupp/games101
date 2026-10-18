@@ -7,6 +7,7 @@
     "test:multiplayer": "deno run --allow-net scripts/smoke-multiplayer.ts",
     "test:bots": "deno run --allow-net scripts/smoke-bots.ts",
     "test:protocol": "deno run --allow-net scripts/smoke-protocol.ts",
+    "test:art-timers": "deno run --allow-net scripts/smoke-artwork-timers.ts",
     "build:pages": "deno run --allow-read --allow-write=_site scripts/build-pages.ts"
   },
   "lint": {

@@ -93,11 +93,13 @@ aceptan la URL WebSocket del servidor publicado como argumento:
 deno task test:multiplayer ws://127.0.0.1:8787/escondidas-en-pintura/ws
 deno task test:bots ws://127.0.0.1:8787/escondidas-en-pintura/ws
 deno task test:protocol ws://127.0.0.1:8787/escondidas-en-pintura/ws
+deno task test:art-timers ws://127.0.0.1:8787/escondidas-en-pintura/ws
 ```
 
 El primero completa una ronda con dos personas y reconexión; el segundo comprueba CPU en una sala
 individual y en otra con cambio de anfitrión; el tercero verifica versiones y rechaza conexiones
-incompatibles. Las pruebas crean salas temporales y cierran sus conexiones al terminar.
+incompatibles. El cuarto comprueba Obras sin límite, Últimos 30 s, entregas canceladas y reconexión
+sin reiniciar el reloj. Las pruebas crean salas temporales y cierran sus conexiones al terminar.
 `pnpm test:hibernation` inicia un Worker local aislado, fuerza la hibernación de una sala durante
 la pintura y la búsqueda, y comprueba que sus alarmas conservan las conexiones, las decisiones de
 las CPU y los puntos. No necesita iniciar otro servidor ni acceder a la cuenta de Cloudflare.
@@ -111,7 +113,7 @@ Antes de publicar el cliente, comprueba una ronda contra el servidor público y 
 y catálogo. **Este flujo no despliega el Worker**: publica primero las salas y después GitHub Pages.
 
 Para esta actualización, `/health` debe indicar `protocol: 2`, `artworks: 35` y `cpu: true`.
-Después de desplegar el Worker, ejecuta las tres pruebas anteriores con su dirección pública `wss://`
+Después de desplegar el Worker, ejecuta las cuatro pruebas anteriores con su dirección pública `wss://`
 y luego publica el cliente. En un entorno sin sesión de Wrangler, configura de forma segura
 `CLOUDFLARE_API_TOKEN` para la cuenta de destino; no lo guardes en el repositorio ni en `config.js`.
 

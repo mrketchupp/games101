@@ -107,8 +107,13 @@ en una misma sala. En el modo CPU, el navegador guarda las obras pendientes para
 al volver al menú o recargar la página. El primer cuadro de un ciclo tampoco repite el último
 del anterior.
 
-Las imágenes están incluidas en el juego y en la publicación estática. Se carga la obra de cada
-ronda cuando hace falta, sin descargar toda la colección al empezar ni consultar al museo.
+Las imágenes están incluidas en el juego y en la publicación estática. Al elegir Obras, se precargan
+gradualmente durante la sala de espera y las rondas: una descarga a baja prioridad cada vez, con
+una pausa entre archivos y preferencia por los próximos cuadros. La obra que se necesita para jugar
+tiene prioridad y detiene la descarga de fondo. La precarga se pausa al ocultar la pestaña, perder
+la conexión, activar ahorro de datos o detectar una conexión 2G; también al volver al menú o a Patrones.
+Los archivos comprimidos quedan en la caché del navegador, sin mantener toda la galería decodificada
+en memoria ni consultar al museo. Si el navegador vacía su caché, la obra se descarga cuando hace falta.
 El [comando de descarga documentado en los créditos](art/CREDITS.md#descargar-y-verificar-las-imágenes)
 permite volver a obtener y verificar los originales. Si una imagen no carga, la partida muestra un
 aviso y permite volver a intentarlo o elegir Patrones.
@@ -163,6 +168,7 @@ local viven en memoria: si Deno se reinicia, esas partidas en curso se pierden.
 | `multiplayer.ts` | Salas en línea por WebSocket (lo usa `../server.ts`). |
 | `paintings.js` | Los 10 cuadros generados por código (con la misma semilla, todos ven el mismo cuadro). |
 | `artworks.js`, `art/`, `obras/` | Catálogo de 35 obras, imágenes locales y créditos de las fuentes. |
+| `art-prefetch.js` | Cola de descargas de baja prioridad que cede ante la obra de la ronda. |
 | `bot-ai.js` | Perfiles de dificultad y decisiones reproducibles de las CPU, compartidos por el cliente y el servidor. |
 | `figure.js` | La figura de bloques y sus 10 poses. |
 | `game.js` | Interfaz, dibujo, zoom, pintura, búsqueda, bots, tutorial y conexión. |

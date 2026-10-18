@@ -121,28 +121,102 @@
   // ---------------------------------------------------------------- cuadros
   const paintCache = new Map();
   const artImages = new Map();
+  const decodedArt = new Map();
   let phaseRevision = 0;
+  const artPrefetch = window.ArtPrefetch.create({
+    urls: (window.HumanArt?.works || []).map((work) => work.file).filter(Boolean),
+    canRun: () => {
+      const connection = navigator.connection;
+      return location.protocol !== 'file:' && !document.hidden && navigator.onLine !== false &&
+        !connection?.saveData && !['slow-2g', '2g'].includes(connection?.effectiveType);
+    },
+  });
+
+  function syncArtPrefetch(collection, preload) {
+    if (collection !== 1) { artPrefetch.pause(); return; }
+    if (Array.isArray(preload)) {
+      const urls = preload.filter(Number.isInteger).map((idx) => window.HumanArt?.works[idx]?.file).filter(Boolean);
+      artPrefetch.prioritize(urls);
+    }
+    artPrefetch.resume();
+  }
+
+  document.addEventListener('visibilitychange', () => artPrefetch.refresh());
+  navigator.connection?.addEventListener('change', () => artPrefetch.refresh());
+  window.addEventListener('offline', () => artPrefetch.refresh());
+  window.addEventListener('online', () => { artPrefetch.retryFailed(); artPrefetch.refresh(); });
+
+  function rememberArtwork(idx, image) {
+    decodedArt.delete(idx);
+    decodedArt.set(idx, image);
+    HumanArt.works[idx].image = image;
+    while (decodedArt.size > 6) {
+      const oldest = decodedArt.keys().next().value;
+      if (HumanArt.works[oldest].image === decodedArt.get(oldest)) delete HumanArt.works[oldest].image;
+      decodedArt.delete(oldest);
+    }
+  }
 
   function loadArtwork(idx) {
-    if (artImages.has(idx)) return artImages.get(idx);
     const work = window.HumanArt && HumanArt.works[idx];
     if (!work) return Promise.reject(new Error('La obra no está disponible.'));
+    if (work.image) { rememberArtwork(idx, work.image); return Promise.resolve(work.image); }
+    if (artImages.has(idx)) return artImages.get(idx);
+    const release = artPrefetch.hold();
     const pending = new Promise((resolve, reject) => {
       const image = new Image();
       const timer = setTimeout(() => image.onerror(), 15000);
-      image.onload = () => { clearTimeout(timer); work.image = image; resolve(image); };
+      image.fetchPriority = 'high';
+      image.onload = () => {
+        clearTimeout(timer);
+        image.onload = image.onerror = null;
+        rememberArtwork(idx, image);
+        resolve(image);
+      };
       image.onerror = () => {
         clearTimeout(timer);
         image.onload = null;
         image.onerror = null;
-        artImages.delete(idx);
+        image.src = '';
         reject(new Error('No se pudo cargar «' + work.title + '». Revisa tu conexión y vuelve a intentarlo.'));
       };
       if (!work.file) image.crossOrigin = 'anonymous';
       image.src = work.file || work.imageUrl;
     });
     artImages.set(idx, pending);
+    pending.finally(() => {
+      if (artImages.get(idx) === pending) artImages.delete(idx);
+      release();
+    }).catch(() => {});
     return pending;
+  }
+
+  /** Una obra necesaria se reintenta mientras siga perteneciendo a la fase que la pidió. */
+  async function artworkWhenCurrent(idx, current, failed = () => {}) {
+    const release = artPrefetch.hold();
+    try {
+      while (current()) {
+        try { await loadArtwork(idx); return current(); }
+        catch (error) {
+          if (!current()) return false;
+          failed(error);
+          await new Promise((resolve) => setTimeout(resolve, 2000));
+        }
+      }
+      return false;
+    } finally {
+      release();
+    }
+  }
+
+  function accountArtworkWait(message, elapsed) {
+    const m = { ...message };
+    if (m.duration != null) m.duration = Math.max(0, m.duration - elapsed);
+    if (m.phase === 'seek' && m.limit != null) {
+      m.elapsed = Math.max(0, Number(m.elapsed) || 0) + Math.min(elapsed, m.limit);
+      m.limit = Math.max(0, m.limit - elapsed);
+    }
+    return m;
   }
 
   function extractPalette(data) {
@@ -391,10 +465,9 @@
     }
 
     async hide(m, type) {
-      if (m.collection === 1) {
-        try { await loadArtwork(m.painting); } catch { return; }
-      }
-      if (!this.alive || this.phase !== m) return;
+      const current = () => this.alive && this.phase === m;
+      if (m.collection === 1 && !await artworkWhenCurrent(m.painting, current)) return;
+      if (!current()) return;
       if (!this.fig || this.figSeed !== m.seed || this.figRound !== m.round) {
         this.fig = makeBotFigure(getPainting(m.painting, m.seed, m.difficulty, m.collection), this.level, { seed: Bots.seedFor(m.seed, this.player.id) });
         this.figSeed = m.seed;
@@ -404,13 +477,13 @@
     }
 
     async seek(m) {
-      const start = performance.now();
-      if (m.collection === 1) {
-        try { await loadArtwork(m.painting); } catch { return; }
-      }
-      if (!this.alive || this.phase !== m) return;
+      const elapsed = Math.max(0, Number(m.elapsed) || 0);
+      const start = performance.now() - elapsed;
+      const current = () => this.alive && this.phase === m;
+      if (m.collection === 1 && !await artworkWhenCurrent(m.painting, current)) return;
+      if (!current()) return;
       const p = getPainting(m.painting, m.seed, m.difficulty, m.collection);
-      const limit = m.limit / 1000;
+      const limit = (m.limit + elapsed) / 1000;
       const targets = [];
       for (const id of m.participants) {
         if (id === this.player.id || !m.figs[id]) continue;
@@ -451,7 +524,10 @@
       const job = {};
       botPaintJobs.set(key, job);
       const run = async () => {
-        if (m.collection === 1) await loadArtwork(m.painting);
+        if (m.collection === 1 && !await artworkWhenCurrent(m.painting, current)) {
+          if (botPaintJobs.get(key) === job) botPaintJobs.delete(key);
+          return;
+        }
         if (!current()) { if (botPaintJobs.get(key) === job) botPaintJobs.delete(key); return; }
         const p = getPainting(m.painting, m.seed, m.difficulty, m.collection);
         const fig = makeBotFigure(p, Bots.profile(bot.level), { seed: bot.seed });
@@ -687,6 +763,8 @@
   // ---------------------------------------------------------------- pantallas y avisos
   function showScreen(id) {
     G.screen = id;
+    if (id === 'scr-cpu') syncArtPrefetch(cpuOpts.collection);
+    else if (id === 'scr-menu' || id === 'scr-online' || G.mode === 'tutorial') syncArtPrefetch(0);
     $$('.screen').forEach((s) => s.classList.toggle('active', s.id === id));
     document.body.classList.toggle('show-menu-bg', id !== 'scr-game');
     if (id === 'scr-game') requestAnimationFrame(layout);
@@ -1168,6 +1246,7 @@
 
   function updateStatus() {
     const ph = G.phase;
+    if (ph === 'loading') return setStatus('CARGANDO LA OBRA…', 'Puedes salir y volver a intentarlo cuando quieras');
     if (ph === 'prepare') return setStatus('¡PREPÁRENSE!', 'Un nuevo cuadro… ¡fíjate bien en él!');
     if (ph === 'hide') {
       if (!meActive()) return setStatus('LOS DEMÁS SE ESTÁN ESCONDIENDO', 'Jugarás en la siguiente ronda');
@@ -1473,8 +1552,9 @@
 
   async function setupSeek(m) {
     const token = {};
+    const previous = G.seek?.round === m.round && G.seek.seed === m.seed ? G.seek : null;
     G.seek = {
-      token,
+      round: m.round, seed: m.seed,
       start: performance.now(),
       limit: m.limit / 1000,
       penalty: 0,
@@ -1482,15 +1562,35 @@
       found: new Map(),
       misses: [],
       done: false,
+      ...previous,
+      token,
       loaded: false,
       participant: m.participants.includes(G.me) && meActive(),
     };
+    reconcileSeek(m);
     const figs = await loadFigs(m.figs);
     if (G.phase !== 'seek' || G.round !== m.round || !G.seek || G.seek.token !== token) return;
     G.figs = figs;
     G.seek.targets = m.participants.filter((id) => id !== G.me && G.figs[id]).map((id) => G.figs[id]);
     G.seek.loaded = true;
     updateHudSub();
+  }
+
+  function reconcileSeek(m) {
+    const s = G.seek;
+    if (!s || s.round !== m.round || s.seed !== m.seed) return;
+    if (Number.isFinite(m.elapsed)) {
+      const elapsed = Math.max(0, m.elapsed);
+      s.start = Math.min(s.start, performance.now() - elapsed);
+      s.limit = (Math.max(0, m.limit) + elapsed) / 1000;
+    }
+    for (const found of m.finds || []) {
+      if (found.seeker === G.me && !s.found.has(found.target)) s.found.set(found.target, found.time);
+    }
+    if (m.done && Object.hasOwn(m.done, G.me)) {
+      s.done = true;
+      s.reason = s.found.size >= m.participants.length - 1 ? 'all' : 'time';
+    }
   }
 
   async function loadFigs(figs) {
@@ -1504,7 +1604,13 @@
   }
 
   function onFound(m) {
-    if (m.seeker === G.me) return;
+    if (m.seeker === G.me) {
+      if (G.seek && !G.seek.found.has(m.target)) {
+        G.seek.found.set(m.target, Number(m.time));
+        updateHudSub();
+      }
+      return;
+    }
     if (m.target === G.me) {
       toast(`¡${nameOf(m.seeker)} te encontró! (${Number(m.time).toFixed(1)} s)`, 'bad');
       Sound.caught();
@@ -1525,25 +1631,30 @@
   async function enterPhase(m) {
     const revision = ++phaseRevision;
     const receivedAt = performance.now();
+    syncArtPrefetch(m.collection ?? G.room?.settings.collection ?? 0, m.preload);
     if (m.collection === 1 && !['lobby', 'final'].includes(m.phase)) {
       const work = HumanArt.works[m.painting];
       if (!work || !work.image) {
+        G.phase = 'loading';
+        G.painting = null;
+        if (!(m.phase === 'seek' && G.seek?.round === m.round && G.seek.seed === m.seed)) G.seek = null;
+        G.stroke = null;
+        action = null;
+        pointers.clear();
+        closePopovers();
         showScreen('scr-game');
         hideOverlays();
         $('#ov-countdown').hidden = false;
         $('#count-num').textContent = '…';
         $('#count-paint').textContent = 'Cargando obra…';
+        updateControls();
+        updateHudSub();
       }
-      try { await loadArtwork(m.painting); }
-      catch (error) {
-        if (revision === phaseRevision) { leaveGame(); toast(error.message, 'bad'); }
-        return;
-      }
-      if (revision !== phaseRevision) return;
-      const elapsed = performance.now() - receivedAt;
-      m = { ...m };
-      if (m.duration != null) m.duration = Math.max(0, m.duration - elapsed);
-      if (m.phase === 'seek' && m.limit != null) m.limit = Math.max(0, m.limit - elapsed);
+      const current = () => revision === phaseRevision;
+      if (!await artworkWhenCurrent(m.painting, current, () => {
+        $('#count-paint').textContent = 'No se pudo descargar. Reintentando…';
+      })) return;
+      m = accountArtworkWait(m, performance.now() - receivedAt);
     }
     const same = m.phase === G.phase && m.round === G.round && m.phase !== 'lobby';
     const hurried = !!G.phaseMsg?.hurry;
@@ -1551,6 +1662,7 @@
     G.phaseEnd = m.duration != null ? performance.now() + m.duration : null;
     G.phaseDur = m.duration || 0;
     if (same) {
+      if (m.phase === 'seek') reconcileSeek(m);
       if (m.phase === 'hide' && m.hurry && !hurried) { banner('¡ÚLTIMOS 30 S!'); Sound.go(); }
       updateControls();
       updateHudSub();
@@ -1772,7 +1884,7 @@
     let remain = G.phaseEnd != null ? (G.phaseEnd - now) / 1000 : 0;
     const s = G.seek;
     if (G.phase === 'seek' && s && s.participant) remain = s.done ? 0 : s.limit - seekElapsed();
-    if (G.phase === 'results' || G.phase === 'prepare' || G.phase === 'check') timer.textContent = '';
+    if (['results', 'prepare', 'check', 'loading'].includes(G.phase)) timer.textContent = '';
     else timer.textContent = G.phase === 'hide' && G.phaseEnd == null ? '∞' : fmtClock(remain);
     const hurry = (G.phase === 'hide' && G.phaseEnd != null && remain <= 10) || (G.phase === 'seek' && s && s.participant && !s.done && remain <= 5);
     timer.classList.toggle('hurry', hurry && remain > 0);
@@ -2014,6 +2126,7 @@
       case 'room':
         if (G.room && (G.room.hostId !== m.hostId || G.room.round !== m.round)) cancelBotPainting();
         G.room = m;
+        syncArtPrefetch(m.settings.collection);
         if (G.mode === 'online' && m.phase === 'lobby' && (G.phase === 'none' || G.phase === 'lobby')) {
           G.phase = 'lobby';
           if (G.screen !== 'scr-lobby') showScreen('scr-lobby');
@@ -2122,6 +2235,7 @@
 
   function leaveGame() {
     phaseRevision++;
+    syncArtPrefetch(0);
     if (confirmCancel) confirmCancel();
     cancelBotPainting();
     onlineBotPhase = null;
@@ -2196,6 +2310,7 @@
   }
 
   function updateCpuPaintingOptions() {
+    if (G.screen === 'scr-cpu') syncArtPrefetch(cpuOpts.collection);
     updateCollectionTimes($('#scr-cpu'), cpuOpts.collection);
     markSeg($('[data-cpu="hideTime"]'), cpuOpts.hideTime);
     markSeg($('[data-cpu="seekTime"]'), cpuOpts.seekTime);
@@ -2714,13 +2829,15 @@
     releasing: false,
     arm() {
       if (this.armed || this.releasing) return;
+      if (history.state?.eepGuard) { this.armed = true; return; }
       try {
         history.pushState({ eepGuard: true }, '', G.mode === 'online' && G.code ? '?sala=' + G.code : location.href);
         this.armed = true;
       } catch { /* sin historial disponible */ }
     },
     release() {
-      if (this.armed && history.state?.eepGuard) {
+      if (this.releasing) return;
+      if (history.state?.eepGuard) {
         this.armed = false;
         this.releasing = true;
         history.back();
@@ -2733,11 +2850,13 @@
   window.addEventListener('popstate', async (e) => {
     if (BackGuard.releasing) {
       BackGuard.releasing = false;
+      // Las versiones anteriores podían acumular guardas; consumirlas también evita atraparse tras recargar.
+      if (e.state?.eepGuard) { BackGuard.armed = true; BackGuard.release(); return; }
       history.replaceState(null, '', location.pathname);
       if (G.screen !== 'scr-menu') BackGuard.arm();
       return;
     }
-    if (e.state?.eepGuard) { BackGuard.armed = true; return; }
+    if (e.state?.eepGuard && !BackGuard.armed) { BackGuard.armed = true; return; }
     if (!BackGuard.armed) return;
     BackGuard.armed = false;
     if (confirmCancel) { confirmCancel(); BackGuard.arm(); return; }

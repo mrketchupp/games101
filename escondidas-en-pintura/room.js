@@ -418,17 +418,27 @@
     /** Envía al jugador el estado de la fase actual (al entrar o reconectar). */
     sync(p) {
       if (this.phase === 'lobby') return;
+      const msg = this.phaseForClient();
+      if (this.phase === 'seek') msg.resumed = true;
+      this.send(p, msg);
+      this.requestBotPaint(p);
+    }
+
+    /** La fase persistida conserva sus plazos originales; el mensaje descuenta lo ya transcurrido. */
+    phaseForClient() {
+      const at = Math.max(this.time(), this.lastTickAt);
       const msg = Object.assign({}, this.phaseMsg, {
         difficulty: this.settings.difficulty, collection: this.settings.collection,
       });
-      if (this.deadline) msg.duration = Math.max(0, this.deadline - this.time());
+      if (this.deadline) msg.duration = Math.max(0, this.deadline - at);
       if (this.phase === 'seek') {
-        const left = Math.max(0, this.deadline - this.time() - MS.seekGrace);
+        const left = Math.max(0, this.deadline - at - MS.seekGrace);
         msg.limit = Math.min(this.limit * 1000, left);
-        msg.resumed = true;
+        msg.elapsed = Math.min(this.limit * 1000, Math.max(0, at - this.phaseStartedAt));
+        msg.finds = this.finds.map((find) => Object.assign({}, find));
+        msg.done = Object.assign({}, this.done);
       }
-      this.send(p, msg);
-      this.requestBotPaint(p);
+      return msg;
     }
 
     disconnect(p, conn) {
@@ -489,7 +499,7 @@
           this.transition = 'endHide';
           this.phaseMsg = Object.assign({}, this.phaseMsg, { duration: MS.hurry, hurry: true });
           this.scheduleTimer();
-          this.broadcast(this.phaseMsg);
+          this.broadcast(this.phaseForClient());
           break;
         case 'botFigure': {
           if (!isHost || !['prepare', 'hide', 'check'].includes(this.phase) || msg.round !== this.round || msg.seed !== this.seed) return;
@@ -520,6 +530,7 @@
         case 'unsubmit':
           if (this.phase !== 'hide' || !p.active) return;
           p.ready = false;
+          delete this.figures[p.id];
           this.broadcastRoom();
           break;
         case 'figure':
@@ -573,13 +584,17 @@
       this.phaseEndsAt = this.deadline;
       this.transition = ms != null ? transition : null;
       this.botActions = [];
+      const ahead = Math.min(2, Math.max(0, this.settings.rounds - this.round));
+      const preload = this.settings.collection === 1 && ahead > 0 && this.inGame()
+        ? this.deck.slice(-ahead).reverse() : [];
       this.phaseMsg = Object.assign({
         t: 'phase', phase, round: this.round, rounds: this.settings.rounds,
         painting: this.painting, seed: this.seed, duration: ms,
         difficulty: this.settings.difficulty, collection: this.settings.collection,
+        preload,
       }, extra || {});
       this.planBotActions();
-      this.broadcast(this.phaseMsg);
+      this.broadcast(this.phaseForClient());
       this.requestBotPaint();
       this.scheduleTimer();
     }

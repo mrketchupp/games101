@@ -14,6 +14,10 @@ const fig = {
 function assert(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
+function assertFigure(actual: Record<string, unknown> | undefined, expected: typeof fig, message: string) {
+  assert(actual && Object.keys(actual).length === Object.keys(expected).length &&
+    Object.entries(expected).every(([key, value]) => Object.hasOwn(actual, key) && actual[key] === value), message);
+}
 function client(code?: string) {
   const url = new URL(endpoint);
   if (code) url.searchParams.set('sala', code);
@@ -113,8 +117,8 @@ try {
   await guest.send({ t: 'submit', fig: { ...fig, x: 350 } });
   const seek = await host.wait((m) => m.t === 'phase' && m.phase === 'seek');
   assert(seek.collection === 1 && seek.participants.length === 2, 'Ambas entregas deben permitir buscar en la colección arte');
-  assert(JSON.stringify(seek.figs[welcome.you]) === JSON.stringify(fig), 'La figura entregada antes de hurry debe llegar intacta a búsqueda');
-  assert(seek.figs[guestWelcome.you].x === 350, 'El invitado debe poder volver a entregar después de cancelar');
+  assertFigure(seek.figs[welcome.you], fig, 'La figura entregada antes de hurry debe llegar intacta a búsqueda');
+  assertFigure(seek.figs[guestWelcome.you], { ...fig, x: 350 }, 'El invitado debe poder volver a entregar después de cancelar');
   await host.send({ t: 'found', target: guestWelcome.you, time: 3 });
   await guest.send({ t: 'found', target: welcome.you, time: 4 });
   const results = await host.wait((m) => m.t === 'phase' && m.phase === 'results');

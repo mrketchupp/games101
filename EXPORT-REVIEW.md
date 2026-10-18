@@ -1,9 +1,9 @@
-# Estado exportado para revisión y publicación local
+# Integración revisada para publicación
 
 Rama solicitada: `codex/export-games101-integration`.
 Base: `9d0cf37637eab51be46a5177cbf214287de2da9c`, el trabajo publicado por Claude.
-Esta exportación guarda el estado pendiente sin desplegar Cloudflare ni modificar `main`.
-No se continuó el desarrollo al recibir la instrucción de exportar.
+La rama permitió recuperar los cambios del entorno remoto, que no podía publicarlos.
+La revisión local integra esa exportación y las correcciones descritas abajo.
 
 ## Contenido conservado
 
@@ -24,7 +24,22 @@ No se continuó el desarrollo al recibir la instrucción de exportar.
 - Protocolo 2 y catálogo exacto compartido entre cliente y servidor. Pages
   verifica la compatibilidad del Worker público antes de publicar el cliente.
 
-## Verificación al exportar
+## Correcciones de la revisión local
+
+- Precarga gradual de obras durante la espera y las rondas: una descarga de baja prioridad,
+  una pausa entre archivos y preferencia por las dos obras siguientes. La carga necesaria
+  interrumpe la cola. Respeta visibilidad, conexión, ahorro de datos y 2G; se pausa en el menú
+  y en Patrones. Guarda archivos comprimidos en la caché HTTP y limita a seis las imágenes
+  decodificadas retenidas por el cliente.
+- Reintentos de imágenes para personas y CPU, con cancelación al cambiar de fase.
+  El tiempo de carga no amplía el reloj de búsqueda.
+- Alarmas tardías y reconexiones muestran el tiempo restante real sin cambiar los plazos
+  ni las decisiones CPU. La sincronización recupera hallazgos y jugadores terminados.
+- Cancelar Listo elimina únicamente la figura de ese jugador y permite recibir la imagen
+  actualizada durante toda la ventana de colección.
+- Navegación consume las guardas duplicadas que podían quedar en el historial tras recargar.
+
+## Verificación local
 
 Ejecutadas de nuevo sobre este estado, todas correctas:
 
@@ -35,41 +50,42 @@ deno task build:pages
 pnpm check:multiplayer
 ```
 
-Resultado: 54 pruebas aprobadas, lint de 21 archivos, salida estática generada
+Resultado: 78 pruebas aprobadas, lint de 25 archivos, salida estática generada
 y paquete del Worker preparado mediante `wrangler deploy --dry-run`.
 Este último comando no publica el Worker.
 
-En la integración anterior también pasaron partidas completas en Deno y Worker
-local, CPU, reconexión, relevo de anfitrión, rechazo de protocolos incompatibles
-y una prueba real de hibernación local de Durable Objects durante pintura y
-búsqueda. El navegador comprobó las 35 imágenes, una partida CPU y una partida
-en línea con figuras reales; hubo comprobaciones móviles a 360 y 390 píxeles.
-Esas comprobaciones preceden a los últimos ajustes de tiempos ilimitados y
-navegación, por lo que no sustituyen su validación final.
-
-## Trabajo incompleto y siguiente revisión
-
-- La última comprobación de navegador de Sin límite no terminó: se detuvo en
-  la aserción de prueba `assert(before.undo > 1)`. No se determinó si era un
-  problema de la prueba o del juego. Hay que repetir esa comprobación, incluidos
-  dibujo/deshacer, Últimos 30 s, navegación y reconexión con las fuentes finales.
-- Se conserva `scripts/smoke-artwork-timers.ts` como prueba manual. Su última
-  ejecución integrada no está confirmada y no tiene tarea propia en `deno.json`.
-- Conviene repetir los smokes completos contra el estado final antes de
-  desplegar. Las instrucciones de servidores y dependencias están en README.
+Pasaron partidas completas por WebSocket en Deno y Worker local, CPU,
+reconexión, relevo de anfitrión y rechazo de protocolos incompatibles.
+La prueba real de hibernación local evacuó el Durable Object durante pintura
+y búsqueda; las conexiones y alarmas originales completaron la partida.
+También pasó la prueba de Obras sin límite, Últimos 30 s, cancelación y PNG
+conservados al reconectar. El smoke compara propiedades de figuras sin depender
+del orden de las claves JSON.
 
 ```bash
 deno task test:multiplayer ws://127.0.0.1:8787/escondidas-en-pintura/ws
 deno task test:bots ws://127.0.0.1:8787/escondidas-en-pintura/ws
 deno task test:protocol ws://127.0.0.1:8787/escondidas-en-pintura/ws
-deno run --allow-net scripts/smoke-artwork-timers.ts ws://127.0.0.1:8787/escondidas-en-pintura/ws
+deno task test:art-timers ws://127.0.0.1:8787/escondidas-en-pintura/ws
 pnpm test:hibernation
 ```
 
-Para publicar, desplegar primero el Worker desde la computadora autenticada,
-comprobar `/health` con `protocol: 2`, `artworks: 35` y `cpu: true`, y después
-publicar el cliente en Pages. Los jugadores deben recargar el juego. Las salas
-de obras iniciadas con el catálogo anterior deben recrearse.
+La automatización del navegador no estaba disponible durante esta revisión local.
+No se repitió la comprobación visual de dibujo/deshacer que quedó inconclusa en
+el entorno remoto (`assert(before.undo > 1)`). Las comprobaciones previas de
+35 imágenes y móvil pertenecen a la exportación anterior; las pruebas actuales
+del cliente ejercitan precarga, carga, historial y reconciliación sin renderizado.
+
+## Publicación
+
+Worker publicado: `aeaa91e9-9675-44e1-9574-8c038f395f93`.
+`/health` confirma `protocol: 2`, `artworks: 35` y `cpu: true`.
+Se conserva Workers Free y la migración SQLite existente.
+Pasaron las cuatro pruebas WebSocket contra la dirección pública: multijugador,
+CPU, protocolo y tiempos de Obras con reconexión.
+El cliente se publica en Pages mediante el flujo al subir `main`, después de
+comprobar una partida con el Worker público. Los jugadores deben recargar el
+juego. Las salas de obras iniciadas con el catálogo anterior deben recrearse.
 
 La exportación excluye tokens, archivos privados de configuración, dependencias
-instaladas, cachés y salidas generadas. No se ha realizado ningún despliegue.
+instaladas, cachés y salidas generadas.
